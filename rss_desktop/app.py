@@ -162,7 +162,11 @@ def loop():
         time.sleep(900)
 
 def main():
-    init(); srv=ThreadingHTTPServer(("127.0.0.1",0),H); port=srv.server_address[1]; threading.Thread(target=loop,daemon=True).start()
+    init()
+    requested=int(os.getenv("XUEQIU_PORT","0") or "0")
+    srv=ThreadingHTTPServer(("127.0.0.1",requested),H)
+    port=srv.server_address[1]
+    threading.Thread(target=loop,daemon=True).start()
     url=f"http://127.0.0.1:{port}"
     if os.getenv("XUEQIU_NO_BROWSER")!="1": threading.Timer(1,lambda:webbrowser.open(url)).start()
     print(url,flush=True); srv.serve_forever()

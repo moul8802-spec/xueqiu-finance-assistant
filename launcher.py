@@ -110,6 +110,7 @@ def main() -> int:
         return 2
 
     server_log = data / "logs" / "server.log"
+    server_log.parent.mkdir(parents=True, exist_ok=True)
     server_handle = server_log.open("a", encoding="utf-8")
     env = os.environ.copy()
     env.setdefault("WRANGLER_SEND_METRICS", "false")

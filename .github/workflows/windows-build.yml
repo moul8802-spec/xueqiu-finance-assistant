@@ -119,6 +119,7 @@ jobs:
         shell: pwsh
         env:
           XUEQIU_NO_BROWSER: '1'
+          XUEQIU_TEST_MODE: '1'
         run: |
           function Stop-XueqiuTestProcesses {
             $pids = @(Get-CimInstance Win32_Process | Where-Object {
@@ -151,6 +152,7 @@ jobs:
         shell: pwsh
         env:
           XUEQIU_NO_BROWSER: '1'
+          XUEQIU_TEST_MODE: '1'
         run: |
           function Stop-XueqiuTestProcesses {
             $pids = @(Get-CimInstance Win32_Process | Where-Object {
@@ -188,6 +190,8 @@ jobs:
 
       - name: Capture screenshot, logs, and SHA256
         shell: pwsh
+        env:
+          XUEQIU_TEST_MODE: '1'
         run: |
           $artifact = 'artifacts'
           New-Item -ItemType Directory -Force $artifact | Out-Null
@@ -241,3 +245,4 @@ jobs:
           name: 雪球财经助手-Windows免Python
           path: artifacts
           if-no-files-found: error
+

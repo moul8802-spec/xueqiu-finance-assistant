@@ -100,7 +100,7 @@ export async function ensureDatabase() {
     db.prepare("CREATE TABLE IF NOT EXISTS device_pairings (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, label TEXT NOT NULL, platform TEXT NOT NULL, token_hash TEXT NOT NULL, token_hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER, expires_at INTEGER)"),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_device_pairings_token_hash ON device_pairings(token_hash)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_device_pairings_actor ON device_pairings(actor_id, created_at)'),
-    db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, updated_at INTEGER NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, connection_state TEXT NOT NULL DEFAULT 'disabled', consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, updated_at INTEGER NOT NULL)"),
   ]);
   for (const statement of [
     "ALTER TABLE messages ADD COLUMN sender_name TEXT",
@@ -113,6 +113,7 @@ export async function ensureDatabase() {
     try { await db.prepare(statement).run(); } catch { /* column already exists */ }
   }
   try { await db.prepare("ALTER TABLE drafts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'").run(); } catch { /* already present */ }
+  try { await db.prepare("ALTER TABLE collector_state ADD COLUMN connection_state TEXT NOT NULL DEFAULT 'disabled'").run(); } catch { /* already present */ }
   })();
   try {
     await databaseReady;
@@ -628,7 +629,8 @@ export async function getSystemStatus() {
     duplicatesToday: duplicates?.count ?? 0,
     messagesToday: messages?.count ?? 0,
     listener: {
-      enabled: Boolean(env.FEISHU_VERIFICATION_TOKEN),
+      enabled: Boolean(env.FEISHU_WS_ENABLED === 'true' || env.FEISHU_VERIFICATION_TOKEN),
+      connectionState: collector?.connection_state ? String(collector.connection_state) : (env.FEISHU_WS_ENABLED === 'true' ? 'starting' : 'disabled'),
       lastReceivedAt: collector?.last_received_at == null ? null : Number(collector.last_received_at),
       lastSuccessAt: collector?.last_success_at == null ? null : Number(collector.last_success_at),
       lastError: collector?.last_error ? String(collector.last_error) : null,
@@ -639,10 +641,18 @@ export async function getSystemStatus() {
 
 export async function recordCollectorSuccess(eventId: string, receivedAt = Date.now()) {
   await ensureDatabase();
-  await env.DB.prepare(`INSERT INTO collector_state (id, last_received_at, last_success_at, last_error, consecutive_failures, last_event_id, updated_at)
-    VALUES ('feishu', ?, ?, NULL, 0, ?, ?) ON CONFLICT(id) DO UPDATE SET last_received_at=excluded.last_received_at,
-    last_success_at=excluded.last_success_at, last_error=NULL, consecutive_failures=0, last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`)
+  await env.DB.prepare(`INSERT INTO collector_state (id, last_received_at, last_success_at, last_error, connection_state, consecutive_failures, last_event_id, updated_at)
+    VALUES ('feishu', ?, ?, NULL, 'connected', 0, ?, ?) ON CONFLICT(id) DO UPDATE SET last_received_at=excluded.last_received_at,
+    last_success_at=excluded.last_success_at, last_error=NULL, connection_state='connected', consecutive_failures=0, last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`)
     .bind(receivedAt, Date.now(), eventId, Date.now()).run();
+}
+
+export async function recordCollectorConnection(state: string, errorMessage?: string) {
+  await ensureDatabase();
+  const safeState = ['starting', 'connected', 'reconnecting', 'disconnected', 'error', 'disabled'].includes(state) ? state : 'error';
+  await env.DB.prepare(`INSERT INTO collector_state (id, connection_state, last_error, consecutive_failures, updated_at)
+    VALUES ('feishu', ?, ?, 0, ?) ON CONFLICT(id) DO UPDATE SET connection_state=excluded.connection_state,
+    last_error=excluded.last_error, updated_at=excluded.updated_at`).bind(safeState, errorMessage ? errorMessage.slice(0, 500) : null, Date.now()).run();
 }
 
 export async function recordCollectorFailure(message: string, eventId?: string) {

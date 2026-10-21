@@ -21,7 +21,7 @@ type Draft = {
 
 type SystemStatus = {
   mode: string; configured: boolean; allowedChats: number; pending: number;
-  duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; lastReceivedAt: number | null; lastSuccessAt: number | null; lastError: string | null; consecutiveFailures: number };
+  duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; connectionState?: string; lastReceivedAt: number | null; lastSuccessAt: number | null; lastError: string | null; consecutiveFailures: number };
 };
 
 type InboundMessage = { id: string; messageId: string; senderName: string | null; source: string; originalText: string | null; sanitizedText: string; sourceUrl: string | null; status: string; receivedAt: number; };
@@ -162,7 +162,7 @@ export function ReviewDashboard() {
             <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
               <div className="mb-3 flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-emerald-700" />接入状态</div>
               <div className="space-y-2.5 text-xs text-muted-foreground">
-                <StatusRow label="消息订阅" value={status?.configured ? '已连接' : status?.mode === 'simulation' ? '模拟中' : '待配置'} />
+                <StatusRow label="飞书长连接" value={connectionLabel(status?.listener?.connectionState)} />
                 <StatusRow label="群白名单" value={`${status?.allowedChats ?? 0} 个`} />
                 <StatusRow label="今日去重" value={`${status?.duplicatesToday ?? 0} 条`} />
                 <StatusRow label="最近接收" value={status?.listener?.lastSuccessAt ? formatTime(status.listener.lastSuccessAt) : '尚无'} />
@@ -172,12 +172,14 @@ export function ReviewDashboard() {
         </aside>
 
         <section className="min-w-0">
-          <ManualImportPanel onDraftCreated={loadData} />
-          <DevicePairingPanel />
+          <details className="mb-5 rounded-2xl border border-border bg-card p-4 text-sm">
+            <summary className="cursor-pointer font-medium text-muted-foreground">备用入口（手动导入 / 设备上传）</summary>
+            <div className="mt-4 space-y-4"><ManualImportPanel onDraftCreated={loadData} /><DevicePairingPanel /></div>
+          </details>
           <FeishuConnectionPanel onDraftCreated={loadData} />
           <div className="mb-5 flex items-end justify-between gap-3">
             <div>
-              <div className={`mb-1 flex items-center gap-2 text-xs font-medium ${status?.configured || status?.mode === 'simulation' ? 'text-emerald-700' : 'text-amber-700'}`}><CircleDot className="size-3 fill-current" />{status?.configured ? '飞书事件订阅已配置' : status?.mode === 'simulation' ? '模拟测试模式' : '等待配置飞书事件订阅'}</div>
+              <div className={`mb-1 flex items-center gap-2 text-xs font-medium ${status?.listener?.connectionState === 'connected' ? 'text-emerald-700' : 'text-amber-700'}`}><CircleDot className="size-3 fill-current" />{status?.listener?.connectionState === 'connected' ? '飞书长连接已连接' : status?.listener?.connectionState === 'reconnecting' ? '飞书长连接重连中' : '等待飞书长连接'}</div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{VIEW_LABELS[view]}</h1>
               <p className="mt-1 text-sm text-muted-foreground">{loading ? '正在读取草稿…' : `${drafts.length} 条${VIEW_LABELS[view]}草稿`}</p>
             </div>
@@ -248,4 +250,8 @@ function EmptyState({ text }: { text: string }) {
 
 function formatTime(timestamp: number) {
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(timestamp);
+}
+
+function connectionLabel(state?: string) {
+  return ({ connected: '已连接', starting: '启动中', reconnecting: '重连中', disconnected: '未连接', error: '错误', disabled: '未配置' } as Record<string, string>)[state || 'disabled'] || '未连接';
 }

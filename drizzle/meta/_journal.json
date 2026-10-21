@@ -29,6 +29,13 @@
       "when": 1792567973397,
       "tag": "0003_parched_demogoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792572449432,
+      "tag": "0004_slim_sunset_bain",
+      "breakpoints": true
     }
   ]
 }

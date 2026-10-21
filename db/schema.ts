@@ -140,6 +140,7 @@ export const collectorState = sqliteTable('collector_state', {
   lastReceivedAt: integer('last_received_at'),
   lastSuccessAt: integer('last_success_at'),
   lastError: text('last_error'),
+  connectionState: text('connection_state').notNull().default('disabled'),
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
   lastEventId: text('last_event_id'),
   updatedAt: integer('updated_at').notNull(),

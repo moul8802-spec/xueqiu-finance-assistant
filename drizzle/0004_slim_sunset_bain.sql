@@ -1,0 +1,1 @@
+ALTER TABLE `collector_state` ADD `connection_state` text DEFAULT 'disabled' NOT NULL;

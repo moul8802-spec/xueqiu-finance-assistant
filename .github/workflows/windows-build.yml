@@ -57,12 +57,14 @@ jobs:
             --add-data "node_modules;node_modules" `
             --add-data ".dev.vars.example;." `
             --add-data "README.md;." `
+            --add-data "feishu-ws.mjs;." `
             launcher.py
 
       - name: Start EXE and run end-to-end tests
         shell: pwsh
         env:
           XUEQIU_NO_BROWSER: '1'
+          XUEQIU_TEST_MODE: '1'
         run: |
           function Stop-XueqiuTestProcesses {
             $pids = @(Get-CimInstance Win32_Process | Where-Object {
@@ -239,4 +241,3 @@ jobs:
           name: 雪球财经助手-Windows免Python
           path: artifacts
           if-no-files-found: error
-

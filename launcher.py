@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import http.client
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -10,36 +11,40 @@ import time
 import webbrowser
 from pathlib import Path
 
-
 APP_NAME = "雪球财经助手"
 DEFAULT_PORT = 8787
 
 
 def bundle_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS"))
-    return Path(__file__).resolve().parent
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 
 def data_root() -> Path:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     return root / APP_NAME
 
 
 def log_line(log_file: Path, message: str) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     with log_file.open("a", encoding="utf-8") as handle:
-        handle.write(f"[{stamp}] {message}\n")
+        handle.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
     try:
         print(message, flush=True)
     except UnicodeEncodeError:
-        # Windows CI consoles may use cp1252 even when the app data is UTF-8.
-        # Keep the UTF-8 file log intact and never let diagnostic output stop
-        # the service before Wrangler starts.
-        safe = message.encode("ascii", errors="replace").decode("ascii")
-        print(safe, flush=True)
+        print(message.encode("ascii", errors="replace").decode("ascii"), flush=True)
+
+
+def read_vars(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
 
 
 def port_available(port: int) -> bool:
@@ -49,7 +54,10 @@ def port_available(port: int) -> bool:
 
 
 def choose_port(log_file: Path) -> int:
-    requested = int(os.environ.get("XUEQIU_PORT", str(DEFAULT_PORT)))
+    try:
+        requested = int(os.environ.get("XUEQIU_PORT", str(DEFAULT_PORT)))
+    except ValueError as error:
+        raise RuntimeError("XUEQIU_PORT 不是有效端口号") from error
     for port in range(requested, requested + 20):
         if port_available(port):
             if port != requested:
@@ -58,14 +66,12 @@ def choose_port(log_file: Path) -> int:
     raise RuntimeError(f"端口 {requested}-{requested + 19} 均被占用")
 
 
-def wait_for_http(port: int, log_file: Path, process: subprocess.Popen, server_log: Path, timeout: float = 60.0) -> None:
-    deadline = time.monotonic() + timeout
+def wait_for_http(port: int, log_file: Path, process: subprocess.Popen, server_log: Path) -> None:
+    deadline = time.monotonic() + 60
     last_error = ""
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            tail = ""
-            if server_log.exists():
-                tail = server_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+            tail = server_log.read_text(encoding="utf-8", errors="replace")[-4000:] if server_log.exists() else ""
             raise RuntimeError(f"服务进程提前退出（exit={process.returncode}）：{tail}")
         try:
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
@@ -89,94 +95,69 @@ def main() -> int:
     data.mkdir(parents=True, exist_ok=True)
     (data / "state").mkdir(exist_ok=True)
     log_file = data / "logs" / "launcher.log"
-
-    node = root / "runtime" / "node.exe"
-    wrangler = root / "node_modules" / "wrangler" / "bin" / "wrangler.js"
-    config = root / "dist" / "server" / "wrangler.json"
-    if not node.exists() or not wrangler.exists() or not config.exists():
-        log_line(log_file, "打包文件不完整：缺少 Node、Wrangler 或 dist/server/wrangler.json")
-        return 2
-
     vars_file = data / ".dev.vars"
     if not vars_file.exists():
         vars_file.write_text(
-            'SIMULATION_MODE="true"\n'
-            'FEISHU_VERIFICATION_TOKEN="local-test-token"\n'
-            'FEISHU_ALLOWED_CHAT_IDS="simulated-finance-group"\n'
-            'FEISHU_ALLOWED_CHAT_NAMES="模拟财经群"\n',
+            "SIMULATION_MODE=\"false\"\n"
+            "FEISHU_APP_ID=\"\"\n"
+            "FEISHU_APP_SECRET=\"\"\n"
+            "FEISHU_ALLOWED_CHAT_IDS=\"\"\n"
+            "FEISHU_ALLOWED_CHAT_NAMES=\"\"\n",
             encoding="utf-8",
         )
-
+        log_line(log_file, f"已创建配置文件：{vars_file}；请填写飞书 App ID、App Secret 和财经采集群 ID")
+    local_vars = read_vars(vars_file)
+    node = root / "runtime" / "node.exe"
+    wrangler = root / "node_modules" / "wrangler" / "bin" / "wrangler.js"
+    config = root / "dist" / "server" / "wrangler.json"
+    ws_script = root / "feishu-ws.mjs"
+    if not node.exists() or not wrangler.exists() or not config.exists() or not ws_script.exists():
+        log_line(log_file, "打包文件不完整：缺少 Node、Wrangler、dist 或飞书长连接脚本")
+        return 2
     try:
         port = choose_port(log_file)
-    except ValueError:
-        log_line(log_file, "XUEQIU_PORT 不是有效端口号")
-        return 2
     except RuntimeError as error:
         log_line(log_file, str(error))
         return 2
-
+    bridge_token = secrets.token_urlsafe(32)
+    allowed_ids = local_vars.get("FEISHU_ALLOWED_CHAT_IDS", "")
+    allowed_names = local_vars.get("FEISHU_ALLOWED_CHAT_NAMES", "")
+    simulation = local_vars.get("SIMULATION_MODE", "false").lower() == "true" or os.environ.get("XUEQIU_TEST_MODE") == "1"
     server_log = data / "logs" / "server.log"
     server_log.parent.mkdir(parents=True, exist_ok=True)
     server_handle = server_log.open("a", encoding="utf-8")
     env = os.environ.copy()
-    env.setdefault("WRANGLER_SEND_METRICS", "false")
-    env.setdefault("NO_COLOR", "1")
-    command = [
-        str(node),
-        str(wrangler),
-        "dev",
-        "--local",
-        "--config",
-        str(config),
-        "--persist-to",
-        str(data / "state"),
-        "--port",
-        str(port),
-        "--var",
-        "SIMULATION_MODE:true",
-        "--var",
-        "FEISHU_VERIFICATION_TOKEN:local-test-token",
-        "--var",
-        "FEISHU_ALLOWED_CHAT_IDS:simulated-finance-group",
-        "--var",
-        "FEISHU_ALLOWED_CHAT_NAMES:模拟财经群",
-        "--show-interactive-dev-session",
-        "false",
-    ]
-    log_line(log_file, f"启动服务：端口 {port}，资源目录 {root}")
-    process = subprocess.Popen(
-        command,
-        # Wrangler resolves package assets and the generated worker relative to
-        # the bundled resource directory.  Keep the writable D1 state in
-        # --persist-to, but run the child from the read-only bundle root.
-        cwd=str(root),
-        env=env,
-        stdout=server_handle,
-        stderr=subprocess.STDOUT,
-        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-    )
-    atexit.register(lambda: server_handle.close())
-    atexit.register(lambda: process.poll() is None and process.terminate())
-
+    env.update({"WRANGLER_SEND_METRICS": "false", "NO_COLOR": "1"})
+    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"FEISHU_WS_ENABLED:{str(not simulation).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
+    log_line(log_file, f"启动本地审核服务：端口 {port}")
+    server = subprocess.Popen(command, cwd=str(root), env=env, stdout=server_handle, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    ws_log = (data / "logs" / "feishu-ws.log").open("a", encoding="utf-8")
+    ws_env = env.copy()
+    ws_env.update(local_vars)
+    ws_env.update({"FEISHU_WS_BRIDGE_URL": f"http://127.0.0.1:{port}/api/local/feishu", "FEISHU_WS_BRIDGE_TOKEN": bridge_token})
+    ws = subprocess.Popen([str(node), str(ws_script)], cwd=str(root), env=ws_env, stdout=ws_log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if not simulation else None
+    atexit.register(lambda: server.poll() is None and server.terminate())
+    if ws is not None:
+        atexit.register(lambda: ws.poll() is None and ws.terminate())
     try:
-        wait_for_http(port, log_file, process, server_log)
+        wait_for_http(port, log_file, server, server_log)
         url = f"http://127.0.0.1:{port}/"
         log_line(log_file, f"请在浏览器打开：{url}")
         if os.environ.get("XUEQIU_NO_BROWSER") != "1":
             webbrowser.open(url)
-        process.wait()
+        server.wait()
     except KeyboardInterrupt:
         log_line(log_file, "收到退出信号，正在关闭服务")
-        process.terminate()
     except Exception as error:
         log_line(log_file, f"启动失败：{error}")
-        if process.poll() is None:
-            process.terminate()
         return 1
     finally:
+        for process in (ws, server):
+            if process is not None and process.poll() is None:
+                process.terminate()
         server_handle.close()
-    return process.returncode or 0
+        ws_log.close()
+    return server.returncode or 0
 
 
 if __name__ == "__main__":

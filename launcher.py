@@ -105,7 +105,7 @@ def main() -> int:
             "FEISHU_ALLOWED_CHAT_NAMES=\"\"\n",
             encoding="utf-8",
         )
-        log_line(log_file, f"已创建配置文件：{vars_file}；请填写飞书 App ID、App Secret 和财经采集群 ID")
+        log_line(log_file, f"已创建配置文件：{vars_file}；请填写飞书 App ID 和 App Secret，首次启动后在审核页绑定财经采集群")
     local_vars = read_vars(vars_file)
     node = root / "runtime" / "node.exe"
     wrangler = root / "node_modules" / "wrangler" / "bin" / "wrangler.js"
@@ -136,7 +136,7 @@ def main() -> int:
     server_handle = server_log.open("a", encoding="utf-8")
     env = os.environ.copy()
     env.update({"WRANGLER_SEND_METRICS": "false", "NO_COLOR": "1"})
-    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"FEISHU_VERIFICATION_TOKEN:{verification_token}", "--var", f"FEISHU_WS_ENABLED:{str(not simulation).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
+    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"LOCAL_DESKTOP_MODE:true", "--var", f"FEISHU_VERIFICATION_TOKEN:{verification_token}", "--var", f"FEISHU_WS_ENABLED:{str(not simulation).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
     log_line(log_file, f"启动本地审核服务：端口 {port}")
     server = subprocess.Popen(command, cwd=str(root), env=env, stdout=server_handle, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     ws_log = (data / "logs" / "feishu-ws.log").open("a", encoding="utf-8")

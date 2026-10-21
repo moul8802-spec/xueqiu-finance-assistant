@@ -100,7 +100,7 @@ export async function ensureDatabase() {
     db.prepare("CREATE TABLE IF NOT EXISTS device_pairings (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, label TEXT NOT NULL, platform TEXT NOT NULL, token_hash TEXT NOT NULL, token_hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER, expires_at INTEGER)"),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_device_pairings_token_hash ON device_pairings(token_hash)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_device_pairings_actor ON device_pairings(actor_id, created_at)'),
-    db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, connection_state TEXT NOT NULL DEFAULT 'disabled', consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, updated_at INTEGER NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, connection_state TEXT NOT NULL DEFAULT 'disabled', binding_status TEXT NOT NULL DEFAULT 'unbound', bound_chat_id TEXT, bound_chat_name TEXT, pending_chat_id TEXT, pending_chat_name TEXT, pending_message_id TEXT, pending_received_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, updated_at INTEGER NOT NULL)"),
   ]);
   for (const statement of [
     "ALTER TABLE messages ADD COLUMN sender_name TEXT",
@@ -114,6 +114,17 @@ export async function ensureDatabase() {
   }
   try { await db.prepare("ALTER TABLE drafts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'").run(); } catch { /* already present */ }
   try { await db.prepare("ALTER TABLE collector_state ADD COLUMN connection_state TEXT NOT NULL DEFAULT 'disabled'").run(); } catch { /* already present */ }
+  for (const statement of [
+    "ALTER TABLE collector_state ADD COLUMN binding_status TEXT NOT NULL DEFAULT 'unbound'",
+    "ALTER TABLE collector_state ADD COLUMN bound_chat_id TEXT",
+    "ALTER TABLE collector_state ADD COLUMN bound_chat_name TEXT",
+    "ALTER TABLE collector_state ADD COLUMN pending_chat_id TEXT",
+    "ALTER TABLE collector_state ADD COLUMN pending_chat_name TEXT",
+    "ALTER TABLE collector_state ADD COLUMN pending_message_id TEXT",
+    "ALTER TABLE collector_state ADD COLUMN pending_received_at INTEGER",
+  ]) {
+    try { await db.prepare(statement).run(); } catch { /* column already exists */ }
+  }
   })();
   try {
     await databaseReady;
@@ -621,10 +632,11 @@ export async function getSystemStatus() {
     env.DB.prepare('SELECT COUNT(*) AS count FROM messages WHERE received_at > ?').bind(startOfToday()).first<{ count: number }>(),
     env.DB.prepare('SELECT * FROM collector_state WHERE id = ?').bind('feishu').first<Record<string, unknown>>(),
   ]);
+  const binding = collectorBindingFromRow(collector);
   return {
     mode: env.SIMULATION_MODE === 'true' ? 'simulation' : 'live',
-    configured: Boolean(env.FEISHU_VERIFICATION_TOKEN && (allowedChatIds().length || env.SITE_OWNER_USER_ID)),
-    allowedChats: allowedChatIds().length,
+    configured: Boolean((env.FEISHU_WS_ENABLED === 'true' || env.FEISHU_VERIFICATION_TOKEN) && (allowedChatIds().length || env.SITE_OWNER_USER_ID || env.LOCAL_DESKTOP_MODE === 'true')),
+    allowedChats: binding.status === 'bound' ? 1 : allowedChatIds().length,
     pending: pending?.count ?? 0,
     duplicatesToday: duplicates?.count ?? 0,
     messagesToday: messages?.count ?? 0,
@@ -636,7 +648,81 @@ export async function getSystemStatus() {
       lastError: collector?.last_error ? String(collector.last_error) : null,
       consecutiveFailures: Number(collector?.consecutive_failures ?? 0),
     },
+    binding,
   };
+}
+
+export type CollectorBinding = {
+  status: 'unbound' | 'pending' | 'bound';
+  boundChatId: string | null;
+  boundChatName: string | null;
+  pendingChatId: string | null;
+  pendingChatName: string | null;
+  pendingMessageId: string | null;
+  pendingReceivedAt: number | null;
+};
+
+function collectorBindingFromRow(row: Record<string, unknown> | null | undefined): CollectorBinding {
+  const status = row?.binding_status === 'bound' || row?.binding_status === 'pending' ? row.binding_status : 'unbound';
+  return {
+    status,
+    boundChatId: status === 'bound' && row?.bound_chat_id != null ? String(row.bound_chat_id) : null,
+    boundChatName: status === 'bound' && row?.bound_chat_name != null ? String(row.bound_chat_name) : null,
+    pendingChatId: status === 'pending' && row?.pending_chat_id != null ? String(row.pending_chat_id) : null,
+    pendingChatName: status === 'pending' && row?.pending_chat_name != null ? String(row.pending_chat_name) : null,
+    pendingMessageId: status === 'pending' && row?.pending_message_id != null ? String(row.pending_message_id) : null,
+    pendingReceivedAt: status === 'pending' && row?.pending_received_at != null ? Number(row.pending_received_at) : null,
+  };
+}
+
+export async function getCollectorBinding(): Promise<CollectorBinding> {
+  await ensureDatabase();
+  const row = await env.DB.prepare('SELECT * FROM collector_state WHERE id = ?').bind('feishu').first<Record<string, unknown>>();
+  return collectorBindingFromRow(row);
+}
+
+export async function recordCollectorCandidate(chatId: string, chatName: string, messageId: string, receivedAt = Date.now()) {
+  await ensureDatabase();
+  const current = await env.DB.prepare('SELECT * FROM collector_state WHERE id = ?').bind('feishu').first<Record<string, unknown>>();
+  if (current?.binding_status === 'bound') return collectorBindingFromRow(current);
+  await env.DB.prepare(`INSERT INTO collector_state (id, connection_state, binding_status, pending_chat_id, pending_chat_name, pending_message_id, pending_received_at, consecutive_failures, updated_at)
+    VALUES ('feishu', 'connected', 'pending', ?, ?, ?, ?, 0, ?) ON CONFLICT(id) DO UPDATE SET connection_state='connected', binding_status='pending', pending_chat_id=excluded.pending_chat_id, pending_chat_name=excluded.pending_chat_name, pending_message_id=excluded.pending_message_id, pending_received_at=excluded.pending_received_at, updated_at=excluded.updated_at`)
+    .bind(chatId, chatName || `飞书群 ${maskId(chatId)}`, messageId, receivedAt, Date.now()).run();
+  await log('collector_binding_candidate', 'feishu', 'chat', chatId, { messageId, chatName: chatName || null });
+  return getCollectorBinding();
+}
+
+export async function bindCollectorChat(chatId: string, chatName: string, actor: string) {
+  await ensureDatabase();
+  const current = await env.DB.prepare('SELECT * FROM collector_state WHERE id = ?').bind('feishu').first<Record<string, unknown>>();
+  if (current?.binding_status !== 'pending' || String(current.pending_chat_id || '') !== chatId) throw new Error('BINDING_CANDIDATE_NOT_FOUND');
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO feishu_selected_chats (actor_id, chat_id, name, external, tenant_key, updated_at) VALUES (?, ?, ?, 0, NULL, ?)
+      ON CONFLICT(actor_id) DO UPDATE SET chat_id=excluded.chat_id, name=excluded.name, updated_at=excluded.updated_at`).bind(actor, chatId, chatName || `飞书群 ${maskId(chatId)}`, now),
+    env.DB.prepare(`UPDATE collector_state SET binding_status='bound', bound_chat_id=?, bound_chat_name=?, pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(chatId, chatName || `飞书群 ${maskId(chatId)}`, now),
+    env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind('collector_chat_bound', actor, 'chat', chatId, JSON.stringify({ name: chatName || null }), now),
+  ]);
+  return getCollectorBinding();
+}
+
+export async function ignoreCollectorCandidate(actor: string) {
+  await ensureDatabase();
+  const now = Date.now();
+  await env.DB.prepare(`UPDATE collector_state SET binding_status='unbound', pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(now).run();
+  await log('collector_binding_ignored', actor, 'chat', 'feishu', {});
+  return getCollectorBinding();
+}
+
+export async function unbindCollectorChat(actor: string) {
+  await ensureDatabase();
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM feishu_selected_chats WHERE actor_id = ?').bind(actor),
+    env.DB.prepare(`UPDATE collector_state SET binding_status='unbound', bound_chat_id=NULL, bound_chat_name=NULL, pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(now),
+    env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind('collector_chat_unbound', actor, 'chat', 'feishu', '{}', now),
+  ]);
+  return getCollectorBinding();
 }
 
 export async function recordCollectorSuccess(eventId: string, receivedAt = Date.now()) {
@@ -649,7 +735,7 @@ export async function recordCollectorSuccess(eventId: string, receivedAt = Date.
 
 export async function recordCollectorConnection(state: string, errorMessage?: string) {
   await ensureDatabase();
-  const safeState = ['starting', 'connected', 'reconnecting', 'disconnected', 'error', 'disabled'].includes(state) ? state : 'error';
+  const safeState = ['starting', 'connected', 'waiting_binding', 'reconnecting', 'disconnected', 'error', 'disabled'].includes(state) ? state : 'error';
   await env.DB.prepare(`INSERT INTO collector_state (id, connection_state, last_error, consecutive_failures, updated_at)
     VALUES ('feishu', ?, ?, 0, ?) ON CONFLICT(id) DO UPDATE SET connection_state=excluded.connection_state,
     last_error=excluded.last_error, updated_at=excluded.updated_at`).bind(safeState, errorMessage ? errorMessage.slice(0, 500) : null, Date.now()).run();
@@ -776,3 +862,4 @@ async function log(action: string, actor: string, entityType: string, entityId: 
   await env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(action, actor, entityType, entityId, JSON.stringify(details), Date.now()).run();
 }
+

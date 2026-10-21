@@ -22,6 +22,7 @@ type Draft = {
 type SystemStatus = {
   mode: string; configured: boolean; allowedChats: number; pending: number;
   duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; connectionState?: string; lastReceivedAt: number | null; lastSuccessAt: number | null; lastError: string | null; consecutiveFailures: number };
+  binding?: { status: 'unbound' | 'pending' | 'bound'; boundChatId: string | null; boundChatName: string | null; pendingChatId: string | null; pendingChatName: string | null; pendingMessageId: string | null; pendingReceivedAt: number | null };
 };
 
 type InboundMessage = { id: string; messageId: string; senderName: string | null; source: string; originalText: string | null; sanitizedText: string; sourceUrl: string | null; status: string; receivedAt: number; };
@@ -117,6 +118,23 @@ export function ReviewDashboard() {
     setNotice('已重新生成草稿');
   }
 
+  async function changeBinding(action: 'bind' | 'ignore', candidate?: { chatId: string; chatName: string }) {
+    const response = await fetch('/api/local/feishu/binding', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, chatId: candidate?.chatId, chatName: candidate?.chatName }),
+    });
+    if (!response.ok) { setNotice('绑定操作失败，请刷新后重试'); return; }
+    setNotice(action === 'bind' ? '已绑定财经采集群' : '已忽略本次发现的群');
+    await loadData();
+  }
+
+  async function unbind() {
+    const response = await fetch('/api/local/feishu/binding', { method: 'DELETE' });
+    if (!response.ok) { setNotice('解除绑定失败，请刷新后重试'); return; }
+    setNotice('已解除绑定，等待下一条群消息');
+    await loadData();
+  }
+
   function switchView(next: QueueView) {
     setView(next);
     setDrafts([]);
@@ -177,6 +195,7 @@ export function ReviewDashboard() {
             <div className="mt-4 space-y-4"><ManualImportPanel onDraftCreated={loadData} /><DevicePairingPanel /></div>
           </details>
           <FeishuConnectionPanel onDraftCreated={loadData} />
+          <CollectorBindingPanel binding={status?.binding} onAction={changeBinding} onUnbind={unbind} />
           <div className="mb-5 flex items-end justify-between gap-3">
             <div>
               <div className={`mb-1 flex items-center gap-2 text-xs font-medium ${status?.listener?.connectionState === 'connected' ? 'text-emerald-700' : 'text-amber-700'}`}><CircleDot className="size-3 fill-current" />{status?.listener?.connectionState === 'connected' ? '飞书长连接已连接' : status?.listener?.connectionState === 'reconnecting' ? '飞书长连接重连中' : '等待飞书长连接'}</div>
@@ -253,5 +272,18 @@ function formatTime(timestamp: number) {
 }
 
 function connectionLabel(state?: string) {
-  return ({ connected: '已连接', starting: '启动中', reconnecting: '重连中', disconnected: '未连接', error: '错误', disabled: '未配置' } as Record<string, string>)[state || 'disabled'] || '未连接';
+  return ({ connected: '已连接', waiting_binding: '等待绑定', starting: '启动中', reconnecting: '重连中', disconnected: '未连接', error: '错误', disabled: '未配置' } as Record<string, string>)[state || 'disabled'] || '未连接';
 }
+
+function CollectorBindingPanel({ binding, onAction, onUnbind }: { binding?: SystemStatus['binding']; onAction: (action: 'bind' | 'ignore', candidate?: { chatId: string; chatName: string }) => Promise<void>; onUnbind: () => Promise<void> }) {
+  if (!binding) return null;
+  const id = binding.status === 'pending' ? binding.pendingChatId : binding.boundChatId;
+  const name = binding.status === 'pending' ? binding.pendingChatName : binding.boundChatName;
+  return <section className="mb-5 rounded-2xl border border-[#3370ff]/20 bg-[#3370ff]/[0.04] p-4 shadow-sm">
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold">飞书采集群绑定</p><p className="mt-1 text-xs text-muted-foreground">仅本机所有者可操作；群 ID 只在本地审核页显示，不写入网页日志。</p></div><Badge variant="outline">{binding.status === 'bound' ? '已绑定' : binding.status === 'pending' ? '发现待确认' : '等待首次消息'}</Badge></div>
+    {binding.status === 'pending' && <div className="mt-4 rounded-xl border border-border bg-card p-3 text-sm"><p className="font-medium">发现群：{name || '未命名群'}</p><p className="mt-1 break-all text-xs text-muted-foreground">群 ID（仅本地显示）：{id}</p><p className="mt-1 text-xs text-muted-foreground">消息 ID：{binding.pendingMessageId || '未知'} · 请确认这是你创建并可控的财经采集群。</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" onClick={() => void onAction('bind', { chatId: id || '', chatName: name || '' })}>绑定为财经采集群</Button><Button size="sm" variant="outline" onClick={() => void onAction('ignore')}>忽略</Button></div></div>}
+    {binding.status === 'bound' && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm"><div><p className="font-medium text-emerald-950">当前采集群：{name || '未命名群'}</p><p className="mt-1 break-all text-xs text-emerald-900/70">群 ID（仅本地显示）：{id}</p></div><Button size="sm" variant="outline" onClick={() => void onUnbind()}>解除绑定 / 重新绑定</Button></div>}
+    {binding.status === 'unbound' && <p className="mt-3 text-sm text-muted-foreground">等待首次绑定：请让机器人在目标群收到一条消息，页面会显示群名和群 ID，再由你确认绑定。</p>}
+  </section>;
+}
+

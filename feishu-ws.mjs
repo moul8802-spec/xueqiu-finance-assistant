@@ -9,7 +9,9 @@ const chatNames = new Map(String(process.env.FEISHU_ALLOWED_CHAT_NAMES || '').sp
 
 if (!appId || !appSecret) fail('缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET');
 if (!bridgeUrl || !bridgeToken) fail('缺少本地桥接地址或 FEISHU_WS_BRIDGE_TOKEN');
-if (!allowlist.size) fail('未配置 FEISHU_ALLOWED_CHAT_IDS，长连接不会读取任何群消息');
+
+const apiClient = new Lark.Client({ appId, appSecret });
+const chatInfoCache = new Map();
 
 async function postBridge(payload) {
   try {
@@ -17,6 +19,18 @@ async function postBridge(payload) {
     if (!response.ok) console.error(`本地桥接返回 HTTP ${response.status}`);
   } catch (error) {
     console.error(`本地桥接失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function getBridgeBinding() {
+  try {
+    const response = await fetch(bridgeUrl, { headers: { 'x-feishu-local-token': bridgeToken } });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data?.binding || null;
+  } catch (error) {
+    console.error(`本地绑定状态读取失败：${error instanceof Error ? error.message : String(error)}`);
+    return null;
   }
 }
 
@@ -53,18 +67,46 @@ function parseMessage(message) {
   return { text: extractText(content).trim(), sourceUrl: extractUrl(content), type };
 }
 
+async function resolveChatName(chatId, event) {
+  const eventName = value(event, 'message', 'chat_name') || value(event, 'chat_name');
+  if (typeof eventName === 'string' && eventName.trim()) return eventName.trim();
+  if (chatInfoCache.has(chatId)) return chatInfoCache.get(chatId);
+  try {
+    const response = await apiClient.im.v1.chat.get({ path: { chat_id: chatId } });
+    const name = String(response?.data?.name || '').trim() || `飞书群 ${chatId.slice(0, 8)}`;
+    chatInfoCache.set(chatId, name);
+    return name;
+  } catch {
+    const fallback = `飞书群 ${chatId.slice(0, 8)}`;
+    chatInfoCache.set(chatId, fallback);
+    return fallback;
+  }
+}
+
 async function onMessage(data) {
   const event = data?.event || data;
   const message = event?.message || {};
   const chatId = String(message.chat_id || '');
-  if (!allowlist.has(chatId)) return;
+  if (!chatId) return;
+  const binding = allowlist.size ? null : await getBridgeBinding();
+  if (allowlist.size && !allowlist.has(chatId)) return;
+  if (!allowlist.size && binding?.status === 'bound' && binding.boundChatId !== chatId) return;
+  const chatName = chatNames.get(chatId) || await resolveChatName(chatId, event);
+  if (!allowlist.size && binding?.status !== 'bound') {
+    await postBridge({
+      type: 'candidate', chatId, chatName,
+      messageId: String(message.message_id || ''),
+      eventTimestamp: Number(message.create_time || event?.create_time || Date.now()),
+    });
+    return;
+  }
   const parsed = parseMessage(message);
   if (!parsed.text) return;
   const sender = event?.sender?.sender_id || event?.sender || {};
   const timestamp = Number(message.create_time || event?.create_time || Date.now());
   await postBridge({
     type: 'message', eventId: String(data?.header?.event_id || data?.event_id || message.message_id),
-    messageId: String(message.message_id || ''), chatId, chatName: chatNames.get(chatId), text: parsed.text,
+    messageId: String(message.message_id || ''), chatId, chatName, text: parsed.text,
     sourceUrl: parsed.sourceUrl, senderId: String(sender.open_id || sender.user_id || sender.union_id || ''),
     eventTimestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
   });
@@ -77,9 +119,9 @@ async function start() {
   await postBridge({ type: 'connection', state: 'starting' });
   const client = new Lark.WSClient({
     appId, appSecret, autoReconnect: true, loggerLevel: Lark.LoggerLevel.warn,
-    onReady: () => { console.log('飞书 WebSocket 已连接'); void postBridge({ type: 'connection', state: 'connected' }); },
+    onReady: () => { const state = allowlist.size ? 'connected' : 'waiting_binding'; console.log('飞书 WebSocket 已连接'); void postBridge({ type: 'connection', state }); },
     onReconnecting: () => { console.warn('飞书 WebSocket 断开，正在重连'); void postBridge({ type: 'connection', state: 'reconnecting' }); },
-    onReconnected: () => { console.log('飞书 WebSocket 已重连'); void postBridge({ type: 'connection', state: 'connected' }); },
+    onReconnected: () => { const state = allowlist.size ? 'connected' : 'waiting_binding'; console.log('飞书 WebSocket 已重连'); void postBridge({ type: 'connection', state }); },
     onError: (error) => { console.error(`飞书 WebSocket 错误：${error.message}`); void postBridge({ type: 'connection', state: 'error', error: error.message }); },
   });
   const eventDispatcher = new Lark.EventDispatcher({}).register({ 'im.message.receive_v1': onMessage });
@@ -95,3 +137,4 @@ async function start() {
 }
 
 void start();
+

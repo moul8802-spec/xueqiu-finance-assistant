@@ -141,7 +141,15 @@ export const collectorState = sqliteTable('collector_state', {
   lastSuccessAt: integer('last_success_at'),
   lastError: text('last_error'),
   connectionState: text('connection_state').notNull().default('disabled'),
+  bindingStatus: text('binding_status').notNull().default('unbound'),
+  boundChatId: text('bound_chat_id'),
+  boundChatName: text('bound_chat_name'),
+  pendingChatId: text('pending_chat_id'),
+  pendingChatName: text('pending_chat_name'),
+  pendingMessageId: text('pending_message_id'),
+  pendingReceivedAt: integer('pending_received_at'),
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
   lastEventId: text('last_event_id'),
   updatedAt: integer('updated_at').notNull(),
 });
+

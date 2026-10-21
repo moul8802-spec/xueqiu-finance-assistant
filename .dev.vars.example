@@ -21,8 +21,10 @@ FEISHU_VERIFICATION_TOKEN=""
 SITE_OWNER_USER_ID=""
 FEISHU_ALLOWED_CHAT_IDS=""
 FEISHU_ALLOWED_CHAT_NAMES=""
+# Windows 长连接首次绑定时可留空；收到第一条群消息后在本机页面确认绑定。
 
 # Windows 本机 WebSocket 长连接（主入口）。仅写入本机配置文件，不上传网页或日志。
 FEISHU_WS_ENABLED="true"
 FEISHU_WS_BRIDGE_TOKEN=""
 FEISHU_LOCAL_OWNER_ID="windows-owner"
+

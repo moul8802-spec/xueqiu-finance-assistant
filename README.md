@@ -20,7 +20,7 @@
 3. 申请并通过以下权限：`im:chat:readonly`、`im:message:readonly`、`im:message.group_msg:get_as_user`。用户授权时还会请求 `offline_access`，用于在服务端刷新用户令牌。
 4. 在 Sites 服务端运行时变量中配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_OAUTH_REDIRECT_URI`、`FEISHU_TOKEN_ENCRYPTION_KEY`、`SITE_OWNER_USER_ID`。App Secret、令牌加密密钥和用户令牌不得写入前端、Git 或日志。
 5. AI 整理优先使用 `AI_PROVIDER=deepseek`、`AI_API_KEY`、`AI_MODEL=deepseek-chat`、`AI_BASE_URL=https://api.deepseek.com`；也兼容 OpenAI 变量。缺失时页面明确显示规则模式。
-6. Windows 首次启动会在 `%LOCALAPPDATA%\\雪球财经助手\\.dev.vars` 创建本机配置模板。填写 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_ALLOWED_CHAT_IDS` 和对应名称；App Secret 只保存在本机配置，不会显示在页面或日志。无需公网回调 URL、Sites 或 `FEISHU_VERIFICATION_TOKEN`。
+6. Windows 首次启动会在 `%LOCALAPPDATA%\\雪球财经助手\\.dev.vars` 创建本机配置模板。只需填写 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`；`FEISHU_ALLOWED_CHAT_IDS` 可保持为空。长连接启动后，机器人收到第一条群消息，审核页会显示群名、群 ID 和“绑定为财经采集群”按钮，确认后自动保存绑定，不需要手动寻找群 ID。App Secret 只保存在本机配置，不会显示在页面或日志。无需公网回调 URL、Sites 或 `FEISHU_VERIFICATION_TOKEN`。
 
 页面中的“测试应用令牌”只在服务端验证 App ID / App Secret 能否取得应用身份令牌，返回值仅包含 HTTP 状态、飞书错误码、错误原因和 `ttLogId`，不会返回或记录令牌。应用令牌通过后，可再使用最小权限 OAuth（仅 `offline_access`）区分应用配置问题与用户账号安全策略拒绝。
 
@@ -58,3 +58,4 @@
 仓库中的 `.github/workflows/windows-build.yml` 会在 GitHub Windows Runner 上安装构建用 Python、执行 `npm ci` 和 `npm run build`，再用 PyInstaller 将启动器、Node.js 运行时、网页资源和依赖打成 `雪球财经助手.exe`。最终用户不需要安装 Python 或 Node.js。启动器把本地状态保存到 `%LOCALAPPDATA%\\雪球财经助手\\state`，默认端口被占用时自动选择后续可用端口。
 
 桌面包仍遵守现有边界：只处理用户主动复制并确认上传的消息；不实现受限飞书群自动采集，也不调用雪球自动发帖接口。审核后复制草稿并打开雪球，由用户自行确认发布。
+

@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { jsonError } from '@/app/api/_auth';
-import { processInboundMessage, recordCollectorConnection, recordCollectorFailure, recordCollectorSuccess } from '@/db/repository';
+import { getCollectorBinding, processInboundMessage, recordCollectorCandidate, recordCollectorConnection, recordCollectorFailure, recordCollectorSuccess } from '@/db/repository';
 
 /** Local-only bridge used by the Windows launcher. It is not a public Feishu webhook. */
 export async function POST(request: Request) {
@@ -12,6 +12,13 @@ export async function POST(request: Request) {
   if (body.type === 'connection') {
     await recordCollectorConnection(String(body.state || 'error'), typeof body.error === 'string' ? body.error : undefined);
     return Response.json({ ok: true });
+  }
+  if (body.type === 'candidate') {
+    const chatId = typeof body.chatId === 'string' ? body.chatId : '';
+    const messageId = typeof body.messageId === 'string' ? body.messageId : '';
+    if (!chatId || !messageId) return jsonError('待绑定事件缺少群或消息标识', 400, 'LOCAL_CANDIDATE_INVALID');
+    const binding = await recordCollectorCandidate(chatId, typeof body.chatName === 'string' ? body.chatName : '', messageId, typeof body.eventTimestamp === 'number' ? body.eventTimestamp : Date.now());
+    return Response.json({ ok: true, binding });
   }
   if (body.type !== 'message') return Response.json({ ok: true, ignored: 'unsupported_local_event' });
   const eventId = typeof body.eventId === 'string' ? body.eventId : '';
@@ -42,3 +49,11 @@ export async function POST(request: Request) {
     return jsonError('本地飞书消息处理失败', 500, 'LOCAL_MESSAGE_PROCESSING_FAILED');
   }
 }
+
+export async function GET(request: Request) {
+  const bridgeToken = env.FEISHU_WS_BRIDGE_TOKEN;
+  const supplied = request.headers.get('x-feishu-local-token');
+  if (!bridgeToken || !supplied || supplied !== bridgeToken) return jsonError('本地飞书桥接令牌无效', 401, 'LOCAL_BRIDGE_UNAUTHORIZED');
+  return Response.json({ ok: true, binding: await getCollectorBinding() });
+}
+

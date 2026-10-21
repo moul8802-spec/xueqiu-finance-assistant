@@ -1,0 +1,176 @@
+name: Windows EXE build and runtime test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+
+      - name: Set up Python for the build only
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies and build web assets
+        shell: pwsh
+        run: |
+          npm ci
+          npm run build
+          @"
+          SIMULATION_MODE="true"
+          FEISHU_VERIFICATION_TOKEN="local-test-token"
+          FEISHU_ALLOWED_CHAT_IDS="simulated-finance-group"
+          FEISHU_ALLOWED_CHAT_NAMES="模拟财经群"
+          "@ | Set-Content -Encoding utf8 .dev.vars
+
+      - name: Download portable Node runtime for the EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build-runtime | Out-Null
+          Invoke-WebRequest -Uri https://nodejs.org/dist/v22.13.1/node-v22.13.1-win-x64.zip -OutFile node.zip
+          Expand-Archive node.zip -DestinationPath node-unpacked
+          Copy-Item node-unpacked\node-v22.13.1-win-x64\node.exe build-runtime\node.exe
+
+      - name: Build one-file Windows EXE with PyInstaller
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pyinstaller
+          pyinstaller --noconfirm --clean --onefile --console --name "雪球财经助手" `
+            --add-binary "build-runtime\node.exe;runtime" `
+            --add-data "dist;dist" `
+            --add-data "node_modules;node_modules" `
+            --add-data ".dev.vars.example;." `
+            --add-data "README.md;." `
+            launcher.py
+
+      - name: Start EXE and run end-to-end tests
+        shell: pwsh
+        env:
+          XUEQIU_NO_BROWSER: '1'
+        run: |
+          $testDir = Join-Path $env:TEMP '雪球财经助手测试'
+          New-Item -ItemType Directory -Force $testDir | Out-Null
+          Copy-Item dist\雪球财经助手.exe (Join-Path $testDir '雪球财经助手.exe') -Force
+          $exe = Join-Path $testDir '雪球财经助手.exe'
+          $env:XUEQIU_PORT = '8787'
+          $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
+          try {
+            $ready = $false
+            1..120 | ForEach-Object {
+              if (-not $ready) {
+                try { $r = Invoke-WebRequest http://127.0.0.1:8787/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ready = $true } } catch {}
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if (-not $ready) { throw 'EXE 启动后网页未在 60 秒内响应' }
+            $env:BASE_URL = 'http://127.0.0.1:8787'
+            npm run test:e2e
+            $drafts = Invoke-RestMethod "$env:BASE_URL/api/drafts?status=pending"
+            if (-not $drafts.drafts -or $drafts.drafts.Count -lt 1) { throw '端到端测试后没有可持久化的草稿' }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Restart EXE and verify SQLite persistence
+        shell: pwsh
+        env:
+          XUEQIU_NO_BROWSER: '1'
+        run: |
+          $testDir = Join-Path $env:TEMP '雪球财经助手测试'
+          $exe = Join-Path $testDir '雪球财经助手.exe'
+          $env:XUEQIU_PORT = '8788'
+          $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
+          try {
+            $ready = $false
+            1..120 | ForEach-Object {
+              if (-not $ready) {
+                try { $r = Invoke-WebRequest http://127.0.0.1:8788/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ready = $true } } catch {}
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if (-not $ready) { throw '重启后的 EXE 网页未响应' }
+            $drafts = Invoke-RestMethod 'http://127.0.0.1:8788/api/drafts?status=pending'
+            if (-not $drafts.drafts -or $drafts.drafts.Count -lt 1) { throw '重启后 SQLite/D1 本地数据未保留' }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Verify occupied port handling
+        shell: pwsh
+        env:
+          XUEQIU_NO_BROWSER: '1'
+        run: |
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8787)
+          $listener.Start()
+          $testDir = Join-Path $env:TEMP '雪球财经助手测试'
+          $exe = Join-Path $testDir '雪球财经助手.exe'
+          $env:XUEQIU_PORT = '8787'
+          $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            $log = Join-Path $env:LOCALAPPDATA '雪球财经助手\logs\launcher.log'
+            if (-not (Test-Path $log) -or -not (Select-String -Path $log -Pattern '已占用，改用端口')) { throw '端口占用时未自动切换端口' }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            $listener.Stop()
+          }
+
+      - name: Capture screenshot, logs, and SHA256
+        shell: pwsh
+        run: |
+          $artifact = 'artifacts'
+          New-Item -ItemType Directory -Force $artifact | Out-Null
+          Copy-Item dist\雪球财经助手.exe "$artifact\雪球财经助手.exe"
+          $hash = Get-FileHash dist\雪球财经助手.exe -Algorithm SHA256
+          $hash.Hash | Set-Content -Encoding ascii "$artifact\雪球财经助手.exe.sha256"
+          $testDir = Join-Path $env:TEMP '雪球财经助手测试'
+          $exe = Join-Path $testDir '雪球财经助手.exe'
+          $env:XUEQIU_PORT = '8789'
+          $env:XUEQIU_NO_BROWSER = '1'
+          $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
+          try {
+            1..120 | ForEach-Object {
+              try { $r = Invoke-WebRequest http://127.0.0.1:8789/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { break } } catch {}
+              Start-Sleep -Milliseconds 500
+            }
+            $edge = (Get-Command msedge.exe -ErrorAction SilentlyContinue).Source
+            if ($edge) { & $edge --headless --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot="$artifact\windows-runtime.png" http://127.0.0.1:8789/ 2>$null }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+          $logDir = Join-Path $env:LOCALAPPDATA '雪球财经助手\logs'
+          if (Test-Path $logDir) { Copy-Item $logDir "$artifact\logs" -Recurse -Force }
+          @"
+          build=github-actions-windows-latest
+          web=local HTTP endpoint responded 200
+          import=10 messages, duplicate removal, draft generation, edit/save, SQLite persistence
+          restart=previous draft visible after EXE restart
+          unicode=Chinese executable path and UI smoke-tested
+          port_conflict=automatic fallback port verified
+          external_rss=not asserted by the app test; external feeds may change or be blocked
+          feishu=restricted automatic collection is not included in this desktop build
+          xueqiu=manual copy/open flow only; no automatic posting API
+          "@ | Set-Content -Encoding utf8 "$artifact\TEST-RESULTS.txt"
+
+      - name: Upload Windows deliverables
+        uses: actions/upload-artifact@v4
+        with:
+          name: 雪球财经助手-Windows免Python
+          path: artifacts
+          if-no-files-found: error

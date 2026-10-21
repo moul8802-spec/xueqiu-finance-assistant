@@ -1,0 +1,18 @@
+# 本地开发时复制为 .dev.vars；部署时全部填写在 Sites 服务端运行时变量中。
+SIMULATION_MODE="false"
+
+# 用户身份 OAuth。App Secret 与令牌加密密钥只能保存在服务端，绝不能以 NEXT_PUBLIC_ 开头。
+FEISHU_APP_ID="cli_replace_me"
+FEISHU_APP_SECRET=""
+FEISHU_OAUTH_REDIRECT_URI="https://feishu-xueqiu-assistant.goodsnipe129.chatgpt.site/api/feishu/oauth/callback"
+# 使用密码管理器生成一段至少 32 字符的随机值，用于 AES-GCM 加密 D1 中的用户令牌。
+FEISHU_TOKEN_ENCRYPTION_KEY=""
+
+# 真实 AI 整理；缺少任一项时页面会明确显示未配置，不会伪造 AI 结果。
+OPENAI_API_KEY=""
+OPENAI_MODEL=""
+
+# 可选：保留的飞书事件订阅入口（与用户 OAuth 主动读取并存）。
+FEISHU_VERIFICATION_TOKEN=""
+FEISHU_ALLOWED_CHAT_IDS="oc_replace_with_allowed_chat_id"
+FEISHU_ALLOWED_CHAT_NAMES="宏观资讯"

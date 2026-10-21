@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1792382762768,
+      "tag": "0000_busy_union_jack",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792394593777,
+      "tag": "0001_red_marvex",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792482270495,
+      "tag": "0002_soft_stone_men",
+      "breakpoints": true
+    }
+  ]
+}

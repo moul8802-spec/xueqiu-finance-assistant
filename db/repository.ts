@@ -686,7 +686,7 @@ export async function recordCollectorCandidate(chatId: string, chatName: string,
   const current = await env.DB.prepare('SELECT * FROM collector_state WHERE id = ?').bind('feishu').first<Record<string, unknown>>();
   if (current?.binding_status === 'bound') return collectorBindingFromRow(current);
   await env.DB.prepare(`INSERT INTO collector_state (id, connection_state, binding_status, pending_chat_id, pending_chat_name, pending_message_id, pending_received_at, consecutive_failures, updated_at)
-    VALUES ('feishu', 'connected', 'pending', ?, ?, ?, ?, 0, ?) ON CONFLICT(id) DO UPDATE SET connection_state='connected', binding_status='pending', pending_chat_id=excluded.pending_chat_id, pending_chat_name=excluded.pending_chat_name, pending_message_id=excluded.pending_message_id, pending_received_at=excluded.pending_received_at, updated_at=excluded.updated_at`)
+    VALUES ('feishu', 'waiting_binding', 'pending', ?, ?, ?, ?, 0, ?) ON CONFLICT(id) DO UPDATE SET connection_state='waiting_binding', binding_status='pending', pending_chat_id=excluded.pending_chat_id, pending_chat_name=excluded.pending_chat_name, pending_message_id=excluded.pending_message_id, pending_received_at=excluded.pending_received_at, updated_at=excluded.updated_at`)
     .bind(chatId, chatName || `飞书群 ${maskId(chatId)}`, messageId, receivedAt, Date.now()).run();
   await log('collector_binding_candidate', 'feishu', 'chat', chatId, { messageId, chatName: chatName || null });
   return getCollectorBinding();
@@ -700,7 +700,7 @@ export async function bindCollectorChat(chatId: string, chatName: string, actor:
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO feishu_selected_chats (actor_id, chat_id, name, external, tenant_key, updated_at) VALUES (?, ?, ?, 0, NULL, ?)
       ON CONFLICT(actor_id) DO UPDATE SET chat_id=excluded.chat_id, name=excluded.name, updated_at=excluded.updated_at`).bind(actor, chatId, chatName || `飞书群 ${maskId(chatId)}`, now),
-    env.DB.prepare(`UPDATE collector_state SET binding_status='bound', bound_chat_id=?, bound_chat_name=?, pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(chatId, chatName || `飞书群 ${maskId(chatId)}`, now),
+    env.DB.prepare(`UPDATE collector_state SET connection_state='connected', binding_status='bound', bound_chat_id=?, bound_chat_name=?, pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(chatId, chatName || `飞书群 ${maskId(chatId)}`, now),
     env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind('collector_chat_bound', actor, 'chat', chatId, JSON.stringify({ name: chatName || null }), now),
   ]);
   return getCollectorBinding();
@@ -709,7 +709,7 @@ export async function bindCollectorChat(chatId: string, chatName: string, actor:
 export async function ignoreCollectorCandidate(actor: string) {
   await ensureDatabase();
   const now = Date.now();
-  await env.DB.prepare(`UPDATE collector_state SET binding_status='unbound', pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(now).run();
+  await env.DB.prepare(`UPDATE collector_state SET connection_state='waiting_binding', binding_status='unbound', pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(now).run();
   await log('collector_binding_ignored', actor, 'chat', 'feishu', {});
   return getCollectorBinding();
 }
@@ -719,7 +719,7 @@ export async function unbindCollectorChat(actor: string) {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare('DELETE FROM feishu_selected_chats WHERE actor_id = ?').bind(actor),
-    env.DB.prepare(`UPDATE collector_state SET binding_status='unbound', bound_chat_id=NULL, bound_chat_name=NULL, pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(now),
+    env.DB.prepare(`UPDATE collector_state SET connection_state='waiting_binding', binding_status='unbound', bound_chat_id=NULL, bound_chat_name=NULL, pending_chat_id=NULL, pending_chat_name=NULL, pending_message_id=NULL, pending_received_at=NULL, updated_at=? WHERE id='feishu'`).bind(now),
     env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind('collector_chat_unbound', actor, 'chat', 'feishu', '{}', now),
   ]);
   return getCollectorBinding();

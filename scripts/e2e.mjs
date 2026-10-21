@@ -25,11 +25,19 @@ async function request(path, options = {}) {
 
 async function requestWithRetry(path, options = {}, attempts = 3) {
   let result;
+  let lastError;
   for (let index = 0; index < attempts; index += 1) {
-    result = await request(path, options);
-    if (result.response.status !== 503 || index === attempts - 1) return result;
+    try {
+      result = await request(path, options);
+      if (result.response.status !== 503 || index === attempts - 1) return result;
+    } catch (error) {
+      lastError = error;
+      const method = String(options.method || 'GET').toUpperCase();
+      if (method !== 'GET' || index === attempts - 1) throw error;
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  if (lastError) throw lastError;
   return result;
 }
 
@@ -128,11 +136,11 @@ const afterRevoke = await request('/api/device/import', {
 check(afterRevoke.response.status === 401 && afterRevoke.data.code === 'DEVICE_TOKEN_INVALID', '撤销后的令牌仍可上传');
 passed('令牌撤销后服务端拒绝上传');
 
-const chatsWithoutConnection = await request('/api/feishu/chats');
+const chatsWithoutConnection = await requestWithRetry('/api/feishu/chats');
 check(chatsWithoutConnection.response.status === 401 && chatsWithoutConnection.data.code === 'FEISHU_NOT_CONNECTED' && !chatsWithoutConnection.data.chats, '未连接时返回了群聊数据');
 passed('未连接时不返回模拟群聊');
 
-const messagesWithoutChat = await request('/api/feishu/messages');
+const messagesWithoutChat = await requestWithRetry('/api/feishu/messages');
 check(messagesWithoutChat.response.status === 400 && messagesWithoutChat.data.code === 'CHAT_NOT_SELECTED' && !messagesWithoutChat.data.messages, '未选择群时返回了消息数据');
 passed('未选择真实群时不返回模拟消息');
 

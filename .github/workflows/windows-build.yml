@@ -90,6 +90,7 @@ jobs:
             if (-not $ready) { throw 'EXE 启动后网页未在 60 秒内响应' }
             $env:BASE_URL = 'http://127.0.0.1:8787'
             npm run test:e2e
+            if ($LASTEXITCODE -ne 0) { throw "端到端测试进程失败，exit=$LASTEXITCODE" }
             $drafts = Invoke-RestMethod "$env:BASE_URL/api/drafts?status=pending"
             if (-not $drafts.drafts -or $drafts.drafts.Count -lt 1) { throw '端到端测试后没有可持久化的草稿' }
           } catch {

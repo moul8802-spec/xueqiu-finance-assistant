@@ -1,8 +1,8 @@
 # 飞书 → 雪球发布助手
 
-一个 iPhone 优先的独立审核工具：站点所有者使用飞书 OAuth 连接自己的账号，选择一个可见群聊作为财经群白名单，真实读取最近 10 条消息，做去重、敏感信息脱敏和 AI 财经筛选整理，生成带来源的雪球动态草稿。用户必须在手机网页/PWA 中检查并编辑，然后复制内容、打开雪球并自行确认发布。
+「雪球财经助手 v2.0 · 飞书采集版」是一个独立的站点审核工具：站点所有者使用飞书 OAuth 连接自己的账号，选择自己创建并可控的“财经采集群”，由飞书官方事件订阅自动接收新消息，按消息 ID + 内容指纹去重、脱敏、分类和整理，生成带来源的雪球动态草稿。用户必须在手机网页/PWA 中检查并编辑，然后复制内容、打开雪球并自行确认发布。
 
-当飞书 OAuth 因账号安全策略暂时不可用时，可在同一页面使用“飞书消息导入”：从 iPhone 飞书分享文本到已安装的 PWA，或复制多条消息后粘贴导入。服务端会批量去重、脱敏、记录来源并生成待人工审核草稿；不会伪造 OAuth 成功或模拟群消息。
+旧版“飞书消息导入”仍保留作为 v1.2 备用入口，但不再是主流程；RSS 也只作为可选辅助源。不会读取受限群，不使用隐藏接口、客户端缓存或 OCR 批量抓取。
 
 本项目不会调用非官方雪球发帖接口，不保存雪球 Cookie，也不会模拟点击或绕过平台风控。
 
@@ -18,9 +18,9 @@
 1. 在飞书开放平台创建“企业自建应用”，记录 App ID / App Secret，并发布可用版本。
 2. 在安全设置中把 OAuth 重定向 URL 精确配置为：`https://feishu-xueqiu-assistant.goodsnipe129.chatgpt.site/api/feishu/oauth/callback`。
 3. 申请并通过以下权限：`im:chat:readonly`、`im:message:readonly`、`im:message.group_msg:get_as_user`。用户授权时还会请求 `offline_access`，用于在服务端刷新用户令牌。
-4. 在 Sites 服务端运行时变量中配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_OAUTH_REDIRECT_URI`、`FEISHU_TOKEN_ENCRYPTION_KEY`。App Secret、令牌加密密钥和用户令牌不得写入前端、Git 或日志。
-5. AI 整理需要服务端变量 `OPENAI_API_KEY` 与 `OPENAI_MODEL`。缺失时真实飞书消息仍可读取，但 AI 整理按钮会停用并明确提示，不会显示模拟成功。
-6. 可选保留事件订阅：请求地址为 `https://feishu-xueqiu-assistant.goodsnipe129.chatgpt.site/api/feishu/events`，并配置 `FEISHU_VERIFICATION_TOKEN` 与环境白名单。OAuth 页面选择的群会另存为当前站点用户的白名单。
+4. 在 Sites 服务端运行时变量中配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_OAUTH_REDIRECT_URI`、`FEISHU_TOKEN_ENCRYPTION_KEY`、`SITE_OWNER_USER_ID`。App Secret、令牌加密密钥和用户令牌不得写入前端、Git 或日志。
+5. AI 整理优先使用 `AI_PROVIDER=deepseek`、`AI_API_KEY`、`AI_MODEL=deepseek-chat`、`AI_BASE_URL=https://api.deepseek.com`；也兼容 OpenAI 变量。缺失时页面明确显示规则模式。
+6. 在飞书事件订阅中登记 `https://feishu-xueqiu-assistant.goodsnipe129.chatgpt.site/api/feishu/events`，配置 `FEISHU_VERIFICATION_TOKEN`，订阅 `im.message.receive_v1`。站点所有者先 OAuth 选择财经采集群，事件回调只接受该群；不要把受限群加入白名单。
 
 页面中的“测试应用令牌”只在服务端验证 App ID / App Secret 能否取得应用身份令牌，返回值仅包含 HTTP 状态、飞书错误码、错误原因和 `ttLogId`，不会返回或记录令牌。应用令牌通过后，可再使用最小权限 OAuth（仅 `offline_access`）区分应用配置问题与用户账号安全策略拒绝。
 
@@ -42,7 +42,7 @@
 {"text":"央行今日开展2690亿元7天期逆回购操作，中标利率维持不变。","chatName":"宏观资讯"}
 ```
 
-可验证：原有财经筛选、24 小时内容去重、30 分钟同群同主题归并、手机号/邮箱/证件号/凭证样式脱敏、草稿编辑、复制状态更新与操作日志。OAuth 的真实成功链路必须在配置真实 App ID / Secret、回调 URL 和用户授权后验证；未配置时服务端只返回明确的配置错误。
+可验证：官方事件回调、24 小时内容去重、同群同主题归并、手机号/邮箱/证件号/凭证样式脱敏、财经分类、AI/规则模式草稿、草稿编辑、复制状态更新与运行日志。OAuth 和最后一次真实端到端链路必须在配置真实 App ID / Secret、回调 URL、选择自有采集群并由用户发送测试消息后验证；未配置时服务端只返回明确的配置错误。
 
 自动化端到端测试还会导入 10 条消息（其中 1 条重复），验证批内去重、历史去重、来源记录、敏感信息脱敏和草稿生成。生产环境缺少 `OPENAI_API_KEY` 时，手工导入会明确使用规则整理；配置后才调用 AI，不会把规则整理显示成 AI 成功。
 

@@ -312,7 +312,8 @@ export async function feishuConnectionStatus(actorId: string) {
     requiredScopes: FEISHU_REQUIRED_SCOPES,
     missingScopes: connection ? FEISHU_REQUIRED_SCOPES.filter((scope) => !connection.scope.includes(scope)) : FEISHU_REQUIRED_SCOPES,
     selectedChat,
-    aiConfigured: Boolean(env.OPENAI_API_KEY && env.OPENAI_MODEL),
+    aiConfigured: Boolean((env.AI_API_KEY || env.OPENAI_API_KEY) && (env.AI_MODEL || env.OPENAI_MODEL)),
+    aiProvider: env.AI_PROVIDER || (env.AI_API_KEY ? 'deepseek' : 'openai'),
   };
 }
 

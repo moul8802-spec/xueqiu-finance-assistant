@@ -20,8 +20,14 @@ export const messages = sqliteTable(
     messageId: text('message_id').notNull(),
     chatId: text('chat_id').notNull(),
     senderId: text('sender_id'),
+    senderName: text('sender_name'),
+    source: text('source').notNull().default('feishu'),
+    originalContent: text('original_content'),
     sanitizedContent: text('sanitized_content').notNull(),
     contentHash: text('content_hash').notNull(),
+    sourceUrl: text('source_url'),
+    eventTimestamp: integer('event_timestamp'),
+    processedAt: integer('processed_at'),
     status: text('status').notNull(),
     duplicateOf: text('duplicate_of'),
     receivedAt: integer('received_at').notNull(),
@@ -128,3 +134,13 @@ export const devicePairings = sqliteTable(
     index('idx_device_pairings_actor').on(table.actorId, table.createdAt),
   ],
 );
+
+export const collectorState = sqliteTable('collector_state', {
+  id: text('id').primaryKey(),
+  lastReceivedAt: integer('last_received_at'),
+  lastSuccessAt: integer('last_success_at'),
+  lastError: text('last_error'),
+  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  lastEventId: text('last_event_id'),
+  updatedAt: integer('updated_at').notNull(),
+});

@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { organizeFinancialMessages } from '@/lib/ai';
+import { organizeFinancialMessages, type AiMessageInput } from '@/lib/ai';
 import type { FeishuChat, FeishuMessage } from '@/lib/feishu';
 
 export type DraftStatus = 'pending' | 'copied' | 'skipped' | 'published';
@@ -34,6 +34,11 @@ export type InboundMessage = {
   chatId: string;
   chatName?: string;
   senderId?: string;
+  senderName?: string;
+  source?: string;
+  sourceUrl?: string;
+  eventTimestamp?: number;
+  actorId?: string;
   text: string;
   simulated?: boolean;
 };
@@ -60,10 +65,14 @@ export type DevicePairing = {
 };
 
 const FINANCE_RULES = [
-  { category: '宏观', topic: 'macro', words: ['央行', '利率', '逆回购', '降准', '货币', '流动性', '社融', 'CPI', 'PPI', 'GDP'] },
-  { category: '公司', topic: 'company', words: ['回购', '增持', '减持', '业绩', '营收', '净利润', '公告', '分红'] },
-  { category: '行业', topic: 'industry', words: ['行业', '产量', '销量', '库存', '出口', '进口', '价格指数'] },
-  { category: '市场', topic: 'market', words: ['A股', '港股', '成交额', '北向', '指数', '涨停', '债券', '汇率'] },
+  { category: 'A股盘面', topic: 'a-share', words: ['A股', '上证', '深证', '创业板', '成交额', '北向', '指数', '涨停'] },
+  { category: '政策监管', topic: 'policy', words: ['政策', '监管', '央行', '证监会', '降准', '利率', '逆回购', '货币', '流动性', '社融'] },
+  { category: '公司公告', topic: 'company', words: ['回购', '增持', '减持', '业绩', '营收', '净利润', '公告', '分红', '问询函'] },
+  { category: '科技产业', topic: 'technology', words: ['芯片', '人工智能', 'AI', '半导体', '算力', '机器人', '新能源', '科技'] },
+  { category: '资金面', topic: 'funds', words: ['资金', '融资', '融券', '主力', '北向', '流入', '流出', '成交'] },
+  { category: '解禁减持', topic: 'unlock', words: ['解禁', '减持', '增持', '股东减持', '限售股'] },
+  { category: '海外市场', topic: 'overseas', words: ['美股', '港股', '纳指', '标普', '道指', '海外', '汇率', '美联储'] },
+  { category: '宏观', topic: 'macro', words: ['CPI', 'PPI', 'GDP', '通胀', '就业', '宏观经济', '出口', '进口'] },
 ] as const;
 
 let databaseReady: Promise<void> | null = null;
@@ -75,7 +84,7 @@ export async function ensureDatabase() {
   await db.batch([
     db.prepare('CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)'),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_chat_id ON sources(chat_id)'),
-    db.prepare('CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, message_id TEXT NOT NULL, chat_id TEXT NOT NULL, sender_id TEXT, sanitized_content TEXT NOT NULL, content_hash TEXT NOT NULL, status TEXT NOT NULL, duplicate_of TEXT, received_at INTEGER NOT NULL)'),
+    db.prepare("CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, message_id TEXT NOT NULL, chat_id TEXT NOT NULL, sender_id TEXT, sender_name TEXT, source TEXT NOT NULL DEFAULT 'feishu', original_content TEXT, sanitized_content TEXT NOT NULL, content_hash TEXT NOT NULL, source_url TEXT, event_timestamp INTEGER, processed_at INTEGER, status TEXT NOT NULL, duplicate_of TEXT, received_at INTEGER NOT NULL)"),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_event_id ON messages(event_id)'),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_messages_hash_received ON messages(content_hash, received_at)'),
@@ -91,7 +100,18 @@ export async function ensureDatabase() {
     db.prepare("CREATE TABLE IF NOT EXISTS device_pairings (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, label TEXT NOT NULL, platform TEXT NOT NULL, token_hash TEXT NOT NULL, token_hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER, expires_at INTEGER)"),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_device_pairings_token_hash ON device_pairings(token_hash)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_device_pairings_actor ON device_pairings(actor_id, created_at)'),
+    db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, updated_at INTEGER NOT NULL)"),
   ]);
+  for (const statement of [
+    "ALTER TABLE messages ADD COLUMN sender_name TEXT",
+    "ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT 'feishu'",
+    "ALTER TABLE messages ADD COLUMN original_content TEXT",
+    "ALTER TABLE messages ADD COLUMN source_url TEXT",
+    "ALTER TABLE messages ADD COLUMN event_timestamp INTEGER",
+    "ALTER TABLE messages ADD COLUMN processed_at INTEGER",
+  ]) {
+    try { await db.prepare(statement).run(); } catch { /* column already exists */ }
+  }
   try { await db.prepare("ALTER TABLE drafts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'").run(); } catch { /* already present */ }
   })();
   try {
@@ -241,7 +261,7 @@ export async function createDraftFromImportedMessages(
   let body: string;
   let organizationMode: 'ai' | 'rules';
 
-  if (env.OPENAI_API_KEY && env.OPENAI_MODEL) {
+  if ((env.AI_API_KEY || env.OPENAI_API_KEY) && (env.AI_MODEL || env.OPENAI_MODEL)) {
     const organization = await organizeFinancialMessages(candidates.map((candidate, index) => ({
       messageId: candidate.messageId,
       text: candidate.text,
@@ -419,9 +439,13 @@ export async function updateDraft(
 export async function processInboundMessage(input: InboundMessage) {
   await ensureDatabase();
   const now = Date.now();
-  const allowed = allowedChatIds();
-  if (!input.simulated && (allowed.length === 0 || !allowed.includes(input.chatId))) {
-    await log('source_rejected', 'feishu', 'message', input.messageId, { chatId: input.chatId });
+  const selected = input.actorId
+    ? await env.DB.prepare('SELECT chat_id, name FROM feishu_selected_chats WHERE actor_id = ? AND chat_id = ?')
+      .bind(input.actorId, input.chatId).first<{ chat_id: string; name: string }>()
+    : null;
+  const allowed = input.simulated || (selected ? true : allowedChatIds().includes(input.chatId));
+  if (!allowed) {
+    await log('source_rejected', 'feishu', 'message', input.messageId, { chatId: input.chatId, actorId: input.actorId ?? null });
     return { outcome: 'rejected' as const, reason: 'chat_not_allowed' };
   }
 
@@ -437,67 +461,196 @@ export async function processInboundMessage(input: InboundMessage) {
   const recentDuplicate = await env.DB.prepare('SELECT id FROM messages WHERE content_hash = ? AND received_at > ? LIMIT 1')
     .bind(contentHash, now - 24 * 60 * 60 * 1000).first<{ id: string }>();
   const messageRowId = crypto.randomUUID();
+  const source = input.source || 'feishu_group_event';
+  const messageInsert = (status: string, duplicateOf: string | null = null) => env.DB.prepare(
+    'INSERT INTO messages (id, event_id, message_id, chat_id, sender_id, sender_name, source, original_content, sanitized_content, content_hash, source_url, event_timestamp, processed_at, status, duplicate_of, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).bind(
+    messageRowId, input.eventId, input.messageId, input.chatId, input.senderId ?? null, input.senderName ?? null,
+    source, input.text, text, contentHash, input.sourceUrl ?? null, input.eventTimestamp ?? now, now, status, duplicateOf, now,
+  );
 
   if (recentDuplicate) {
-    await env.DB.prepare('INSERT INTO messages (id, event_id, message_id, chat_id, sender_id, sanitized_content, content_hash, status, duplicate_of, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(messageRowId, input.eventId, input.messageId, input.chatId, input.senderId ?? null, text, contentHash, 'duplicate', recentDuplicate.id, now).run();
+    await messageInsert('duplicate', recentDuplicate.id).run();
     await log('message_duplicate', input.simulated ? 'simulator' : 'feishu', 'message', messageRowId, { reason: 'same_content_24h', duplicateOf: recentDuplicate.id });
     return { outcome: 'duplicate' as const, messageId: messageRowId };
   }
 
-  const match = matchFinanceTopic(text);
-  const messageStatus = match ? 'queued' : 'filtered';
-  await env.DB.prepare('INSERT INTO messages (id, event_id, message_id, chat_id, sender_id, sanitized_content, content_hash, status, duplicate_of, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)')
-    .bind(messageRowId, input.eventId, input.messageId, input.chatId, input.senderId ?? null, text, contentHash, messageStatus, now).run();
+  const sourceLabel = input.chatName || selected?.name || configuredChatName(input.chatId) || `飞书群 ${maskId(input.chatId)}`;
+  let category: AiOrganizationCategory = '其他';
+  let topic = 'other';
+  let title = '';
+  let body = '';
+  let organizationMode: DraftMetadata['organizationMode'] = 'rules';
+  let selectedByClassifier = false;
+  const organizationFlags = [...flags];
 
-  if (!match) {
-    await log('message_filtered', input.simulated ? 'simulator' : 'feishu', 'message', messageRowId, { reason: 'not_financial' });
-    return { outcome: 'filtered' as const, messageId: messageRowId };
+  if (env.AI_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const organization = await organizeFinancialMessages([{ messageId: input.messageId, text, createTime: input.eventTimestamp ?? now }]);
+      selectedByClassifier = organization.selectedMessageIds.includes(input.messageId);
+      category = organization.category;
+      topic = `ai-${category}`;
+      title = organization.title;
+      body = organization.body;
+      organizationMode = 'ai';
+      if (!selectedByClassifier) organizationFlags.push('AI判断为低价值或缺少明确事实');
+    } catch (error) {
+      organizationFlags.push('AI处理失败，已回退规则模式，需人工核验');
+      await log('ai_organization_failed', 'feishu', 'message', messageRowId, { code: error instanceof Error ? error.name : 'AI_ERROR' });
+    }
   }
 
-  const sourceLabel = input.chatName || configuredChatName(input.chatId) || `飞书群 ${maskId(input.chatId)}`;
-  const mergeCandidate = await env.DB.prepare("SELECT * FROM drafts WHERE status = 'pending' AND source_chat_id = ? AND topic_key = ? AND created_at > ? ORDER BY created_at DESC LIMIT 1")
-    .bind(input.chatId, match.topic, now - 30 * 60 * 1000).first<Record<string, unknown>>();
+  if (organizationMode !== 'ai') {
+    const match = matchFinanceTopic(text);
+    if (match) {
+      selectedByClassifier = true;
+      category = match.category;
+      topic = match.topic;
+      title = makeTitle(text, category);
+      body = makeDraftBody(text, sourceLabel);
+    }
+  }
 
+  if (!selectedByClassifier || !title || !body) {
+    await messageInsert('filtered').run();
+    await log('message_filtered', input.simulated ? 'simulator' : 'feishu', 'message', messageRowId, {
+      reason: organizationMode === 'ai' ? 'ai_classifier_rejected' : 'not_financial', source,
+    });
+    return { outcome: 'filtered' as const, messageId: messageRowId, organizationMode };
+  }
+
+  await messageInsert('queued').run();
+  const mergeCandidate = await env.DB.prepare("SELECT * FROM drafts WHERE status = 'pending' AND source_chat_id = ? AND topic_key = ? AND created_at > ? ORDER BY created_at DESC LIMIT 1")
+    .bind(input.chatId, topic, now - 30 * 60 * 1000).first<Record<string, unknown>>();
+
+  const finalBody = `${body.replace(/\n*来源：[\s\S]*$/u, '').trim()}\n\n以上内容由${organizationMode === 'ai' ? 'AI' : '规则'}根据飞书采集群消息整理，关键数字、主体与时间请在发布前人工核验。\n\n来源：${sourceLabel}`;
   if (mergeCandidate) {
     const draft = mapDraft(mergeCandidate);
-    const body = mergeDraftBody(draft.body, text, sourceLabel);
+    const mergedBody = mergeDraftBody(draft.body, text, sourceLabel);
     const ids = [...draft.sourceMessageIds, input.messageId];
-    const combinedFlags = Array.from(new Set([...draft.reviewFlags, ...flags]));
+    const combinedFlags = Array.from(new Set([...draft.reviewFlags, ...organizationFlags]));
     await env.DB.prepare('UPDATE drafts SET body = ?, source_message_ids = ?, review_flags = ?, updated_at = ? WHERE id = ?')
-      .bind(body, JSON.stringify(ids), JSON.stringify(combinedFlags), now, draft.id).run();
-    await log('message_merged', input.simulated ? 'simulator' : 'feishu', 'draft', draft.id, { messageId: input.messageId });
-    return { outcome: 'merged' as const, draftId: draft.id };
+      .bind(mergedBody, JSON.stringify(ids), JSON.stringify(combinedFlags), now, draft.id).run();
+    await log('message_merged', input.simulated ? 'simulator' : 'feishu', 'draft', draft.id, { messageId: input.messageId, organizationMode });
+    return { outcome: 'merged' as const, draftId: draft.id, organizationMode };
   }
 
   const draftId = crypto.randomUUID();
-  const title = makeTitle(text, match.category);
-  const body = makeDraftBody(text, sourceLabel);
-  const metadata: DraftMetadata = { originalText: text, keyPoints: [text], factCheckFlags: ['待人工核验：时间、数字、主体与来源'], organizationMode: 'feishu' };
+  const metadata: DraftMetadata = {
+    originalText: text,
+    keyPoints: [text],
+    factCheckFlags: ['待人工核验：时间、数字、主体与来源', ...(organizationMode === 'ai' ? ['AI提炼仅供辅助，未完成事实核验'] : ['规则模式：未调用AI'])],
+    organizationMode,
+  };
   await env.DB.batch([
     env.DB.prepare('INSERT INTO drafts (id, title, body, status, category, topic_key, source_chat_id, source_label, source_message_ids, review_flags, metadata_json, created_at, updated_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)')
-      .bind(draftId, title, body, 'pending', match.category, match.topic, input.chatId, sourceLabel, JSON.stringify([input.messageId]), JSON.stringify(flags), JSON.stringify(metadata), now, now),
+      .bind(draftId, title, finalBody, 'pending', category, topic, input.chatId, sourceLabel, JSON.stringify([input.messageId]), JSON.stringify(organizationFlags), JSON.stringify({ ...metadata, sourceUrl: input.sourceUrl ?? null, senderName: input.senderName ?? null, eventTimestamp: input.eventTimestamp ?? now }), now, now),
     env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind('draft_created', input.simulated ? 'simulator' : 'feishu', 'draft', draftId, JSON.stringify({ messageId: input.messageId, category: match.category }), now),
+      .bind('draft_created', input.simulated ? 'simulator' : 'feishu', 'draft', draftId, JSON.stringify({ messageId: input.messageId, category, source, organizationMode }), now),
   ]);
-  return { outcome: 'created' as const, draftId };
+  return { outcome: 'created' as const, draftId, organizationMode };
+}
+
+export async function regenerateDraft(id: string, actor: string): Promise<DraftRecord | null> {
+  await ensureDatabase();
+  if (!(env.AI_API_KEY || env.OPENAI_API_KEY) || !(env.AI_MODEL || env.OPENAI_MODEL)) throw new Error('AI_NOT_CONFIGURED');
+  const row = await env.DB.prepare('SELECT * FROM drafts WHERE id = ?').bind(id).first<Record<string, unknown>>();
+  if (!row) return null;
+  const draft = mapDraft(row);
+  const ids = draft.sourceMessageIds;
+  const messages: AiMessageInput[] = [];
+  for (const messageId of ids) {
+    const message = await env.DB.prepare('SELECT message_id, sanitized_content, event_timestamp, received_at FROM messages WHERE message_id = ?').bind(messageId).first<Record<string, unknown>>();
+    if (message) messages.push({ messageId: String(message.message_id), text: String(message.sanitized_content), createTime: Number(message.event_timestamp || message.received_at || Date.now()) });
+  }
+  if (!messages.length) throw new Error('DRAFT_SOURCE_NOT_FOUND');
+  const organization = await organizeFinancialMessages(messages);
+  if (!organization.title || !organization.body || !organization.selectedMessageIds.length) throw new Error('AI_FILTERED_MESSAGE');
+  const metadata = { ...draft.metadata, keyPoints: messages.map((message) => message.text), organizationMode: 'ai' as const, factCheckFlags: ['待人工核验：时间、数字、主体与来源', 'AI提炼仅供辅助，未完成事实核验'] };
+  const now = Date.now();
+  const body = `${organization.body}\n\n以上内容由 AI 根据飞书采集群消息整理，关键数字、主体与时间请在发布前人工核验。\n\n来源：${draft.sourceLabel}`;
+  await env.DB.batch([
+    env.DB.prepare('UPDATE drafts SET title = ?, body = ?, category = ?, topic_key = ?, metadata_json = ?, updated_at = ? WHERE id = ?').bind(organization.title, body, organization.category, `ai-${organization.category}`, JSON.stringify(metadata), now, id),
+    env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind('draft_regenerated', actor, 'draft', id, JSON.stringify({ mode: 'ai', messageCount: messages.length }), now),
+  ]);
+  const updated = await env.DB.prepare('SELECT * FROM drafts WHERE id = ?').bind(id).first<Record<string, unknown>>();
+  return updated ? mapDraft(updated) : null;
+}
+
+export type InboundMessageRecord = {
+  id: string;
+  eventId: string;
+  messageId: string;
+  chatId: string;
+  senderId: string | null;
+  senderName: string | null;
+  source: string;
+  originalText: string | null;
+  sanitizedText: string;
+  sourceUrl: string | null;
+  eventTimestamp: number | null;
+  status: string;
+  duplicateOf: string | null;
+  receivedAt: number;
+  processedAt: number | null;
+};
+
+export async function listInboundMessages(status?: string): Promise<InboundMessageRecord[]> {
+  await ensureDatabase();
+  const query = status
+    ? env.DB.prepare('SELECT * FROM messages WHERE status = ? ORDER BY received_at DESC LIMIT 100').bind(status)
+    : env.DB.prepare('SELECT * FROM messages ORDER BY received_at DESC LIMIT 100');
+  const result = await query.all<Record<string, unknown>>();
+  return result.results.map((row) => ({
+    id: String(row.id), eventId: String(row.event_id), messageId: String(row.message_id), chatId: String(row.chat_id),
+    senderId: row.sender_id == null ? null : String(row.sender_id), senderName: row.sender_name == null ? null : String(row.sender_name),
+    source: String(row.source || 'feishu'), originalText: row.original_content == null ? null : String(row.original_content),
+    sanitizedText: String(row.sanitized_content), sourceUrl: row.source_url == null ? null : String(row.source_url),
+    eventTimestamp: row.event_timestamp == null ? null : Number(row.event_timestamp), status: String(row.status),
+    duplicateOf: row.duplicate_of == null ? null : String(row.duplicate_of), receivedAt: Number(row.received_at),
+    processedAt: row.processed_at == null ? null : Number(row.processed_at),
+  }));
 }
 
 export async function getSystemStatus() {
   await ensureDatabase();
-  const [pending, duplicates, messages] = await Promise.all([
+  const [pending, duplicates, messages, collector] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS count FROM drafts WHERE status = 'pending'").first<{ count: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS count FROM messages WHERE status = 'duplicate' AND received_at > ?").bind(startOfToday()).first<{ count: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM messages WHERE received_at > ?').bind(startOfToday()).first<{ count: number }>(),
+    env.DB.prepare('SELECT * FROM collector_state WHERE id = ?').bind('feishu').first<Record<string, unknown>>(),
   ]);
   return {
     mode: env.SIMULATION_MODE === 'true' ? 'simulation' : 'live',
-    configured: Boolean(env.FEISHU_VERIFICATION_TOKEN && allowedChatIds().length),
+    configured: Boolean(env.FEISHU_VERIFICATION_TOKEN && (allowedChatIds().length || env.SITE_OWNER_USER_ID)),
     allowedChats: allowedChatIds().length,
     pending: pending?.count ?? 0,
     duplicatesToday: duplicates?.count ?? 0,
     messagesToday: messages?.count ?? 0,
+    listener: {
+      enabled: Boolean(env.FEISHU_VERIFICATION_TOKEN),
+      lastReceivedAt: collector?.last_received_at == null ? null : Number(collector.last_received_at),
+      lastSuccessAt: collector?.last_success_at == null ? null : Number(collector.last_success_at),
+      lastError: collector?.last_error ? String(collector.last_error) : null,
+      consecutiveFailures: Number(collector?.consecutive_failures ?? 0),
+    },
   };
+}
+
+export async function recordCollectorSuccess(eventId: string, receivedAt = Date.now()) {
+  await ensureDatabase();
+  await env.DB.prepare(`INSERT INTO collector_state (id, last_received_at, last_success_at, last_error, consecutive_failures, last_event_id, updated_at)
+    VALUES ('feishu', ?, ?, NULL, 0, ?, ?) ON CONFLICT(id) DO UPDATE SET last_received_at=excluded.last_received_at,
+    last_success_at=excluded.last_success_at, last_error=NULL, consecutive_failures=0, last_event_id=excluded.last_event_id, updated_at=excluded.updated_at`)
+    .bind(receivedAt, Date.now(), eventId, Date.now()).run();
+}
+
+export async function recordCollectorFailure(message: string, eventId?: string) {
+  await ensureDatabase();
+  await env.DB.prepare(`INSERT INTO collector_state (id, last_error, consecutive_failures, last_event_id, updated_at)
+    VALUES ('feishu', ?, 1, ?, ?) ON CONFLICT(id) DO UPDATE SET last_error=excluded.last_error,
+    consecutive_failures=collector_state.consecutive_failures + 1, last_event_id=COALESCE(excluded.last_event_id, collector_state.last_event_id), updated_at=excluded.updated_at`)
+    .bind(message.slice(0, 500), eventId ?? null, Date.now()).run();
 }
 
 function mapDraft(row: Record<string, unknown>): DraftRecord {
@@ -525,7 +678,7 @@ function matchFinanceTopic(text: string) {
   return FINANCE_RULES.find((rule) => rule.words.some((word) => text.includes(word))) ?? null;
 }
 
-type AiOrganizationCategory = '宏观' | '公司' | '行业' | '市场' | '其他';
+type AiOrganizationCategory = 'A股盘面' | '政策监管' | '公司公告' | '科技产业' | '资金面' | '解禁减持' | '海外市场' | '宏观' | '其他';
 
 function splitImportedMessages(raw: string) {
   return raw

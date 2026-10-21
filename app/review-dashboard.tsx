@@ -21,17 +21,21 @@ type Draft = {
 
 type SystemStatus = {
   mode: string; configured: boolean; allowedChats: number; pending: number;
-  duplicatesToday: number; messagesToday: number;
+  duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; lastReceivedAt: number | null; lastSuccessAt: number | null; lastError: string | null; consecutiveFailures: number };
 };
 
-type QueueView = 'pending' | 'copied' | 'published' | 'skipped';
+type InboundMessage = { id: string; messageId: string; senderName: string | null; source: string; originalText: string | null; sanitizedText: string; sourceUrl: string | null; status: string; receivedAt: number; };
+type AuditLog = { id: number; action: string; actor: string; entityType: string; entityId: string; details: Record<string, unknown>; createdAt: number };
+type QueueView = 'new' | 'pending' | 'copied' | 'published' | 'skipped' | 'logs';
 
 const VIEW_LABELS: Record<QueueView, string> = {
-  pending: '待审核', copied: '待确认', published: '已发布', skipped: '暂不处理',
+  new: '新消息', pending: '待审核', copied: '待发布', published: '已发布', skipped: '已忽略', logs: '运行日志',
 };
 
 export function ReviewDashboard() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [messages, setMessages] = useState<InboundMessage[]>([]);
+  const [logs, setLogs] = useState<AuditLog[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [view, setView] = useState<QueueView>('pending');
@@ -47,15 +51,15 @@ export function ReviewDashboard() {
     setLoading(true);
     try {
       const [draftResponse, statusResponse] = await Promise.all([
-        fetch(`/api/drafts?status=${view}`, { cache: 'no-store' }),
+        view === 'new' ? fetch('/api/messages?status=queued', { cache: 'no-store' }) : view === 'logs' ? fetch('/api/audit?limit=80', { cache: 'no-store' }) : fetch(`/api/drafts?status=${view}`, { cache: 'no-store' }),
         fetch('/api/status', { cache: 'no-store' }),
       ]);
       if (!draftResponse.ok || !statusResponse.ok) throw new Error('load_failed');
-      const draftData = await draftResponse.json() as { drafts: Draft[] };
+      const draftData = await draftResponse.json() as { drafts?: Draft[]; messages?: InboundMessage[]; logs?: AuditLog[] };
       const statusData = await statusResponse.json() as { status: SystemStatus };
-      setDrafts(draftData.drafts);
+      setDrafts(draftData.drafts ?? []); setMessages(draftData.messages ?? []); setLogs(draftData.logs ?? []);
       setStatus(statusData.status);
-      setSelectedId((current) => current && draftData.drafts.some((item) => item.id === current) ? current : draftData.drafts[0]?.id ?? null);
+      setSelectedId((current) => current && (draftData.drafts ?? []).some((item) => item.id === current) ? current : draftData.drafts?.[0]?.id ?? null);
     } catch {
       setNotice('队列暂时无法读取，请稍后重试');
     } finally {
@@ -66,6 +70,10 @@ export function ReviewDashboard() {
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => void loadData());
     return () => window.cancelAnimationFrame(frame);
+  }, [loadData]);
+  useEffect(() => {
+    const timer = window.setInterval(() => void loadData(), 15000);
+    return () => window.clearInterval(timer);
   }, [loadData]);
   useEffect(() => {
     if (!notice) return;
@@ -100,6 +108,15 @@ export function ReviewDashboard() {
     setNotice(openXueqiu ? '已复制，请在雪球中确认发布' : '内容已复制');
   }
 
+  async function regenerate() {
+    if (!selected) return;
+    const response = await fetch(`/api/drafts/${selected.id}/regenerate`, { method: 'POST' });
+    if (!response.ok) { setNotice('重新生成失败：请检查 AI 配置或来源消息'); return; }
+    const data = await response.json() as { draft: Draft };
+    setDrafts((items) => items.map((item) => item.id === selected.id ? data.draft : item));
+    setNotice('已重新生成草稿');
+  }
+
   function switchView(next: QueueView) {
     setView(next);
     setDrafts([]);
@@ -125,7 +142,7 @@ export function ReviewDashboard() {
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
             <div className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Sparkles className="size-4" /></div>
-            <div><p className="text-[15px] font-semibold tracking-tight">雪球发布助手</p><p className="text-[11px] text-muted-foreground">飞书接入或手动导入 · 人工审核发布</p></div>
+            <div><p className="text-[15px] font-semibold tracking-tight">雪球财经助手 v2.0</p><p className="text-[11px] text-muted-foreground">飞书采集群自动接收 · AI整理 · 人工审核</p></div>
           </div>
           <Button variant="ghost" size="icon" aria-label="更多选项"><MoreHorizontal /></Button>
         </div>
@@ -135,9 +152,12 @@ export function ReviewDashboard() {
         <aside className="hidden lg:block">
           <div className="sticky top-24 space-y-6">
             <nav className="space-y-1" aria-label="工作台导航">
+              <button className={`nav-item ${view === 'new' ? 'nav-item-active' : ''}`} type="button" onClick={() => switchView('new')}><Inbox />新消息<span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">{messages.length}</span></button>
               <button className={`nav-item ${view === 'pending' ? 'nav-item-active' : ''}`} type="button" onClick={() => switchView('pending')}><Inbox />待审核<span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">{status?.pending ?? 0}</span></button>
               <button className={`nav-item ${view === 'copied' ? 'nav-item-active' : ''}`} type="button" onClick={() => switchView('copied')}><FileText />待确认</button>
               <button className={`nav-item ${view === 'published' ? 'nav-item-active' : ''}`} type="button" onClick={() => switchView('published')}><CheckCircle2 />已发布</button>
+              <button className={`nav-item ${view === 'skipped' ? 'nav-item-active' : ''}`} type="button" onClick={() => switchView('skipped')}><FileText />已忽略</button>
+              <button className={`nav-item ${view === 'logs' ? 'nav-item-active' : ''}`} type="button" onClick={() => switchView('logs')}><FileText />运行日志</button>
             </nav>
             <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
               <div className="mb-3 flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-emerald-700" />接入状态</div>
@@ -145,6 +165,7 @@ export function ReviewDashboard() {
                 <StatusRow label="消息订阅" value={status?.configured ? '已连接' : status?.mode === 'simulation' ? '模拟中' : '待配置'} />
                 <StatusRow label="群白名单" value={`${status?.allowedChats ?? 0} 个`} />
                 <StatusRow label="今日去重" value={`${status?.duplicatesToday ?? 0} 条`} />
+                <StatusRow label="最近接收" value={status?.listener?.lastSuccessAt ? formatTime(status.listener.lastSuccessAt) : '尚无'} />
               </div>
             </div>
           </div>
@@ -164,14 +185,17 @@ export function ReviewDashboard() {
           </div>
 
           <div className="mb-4 flex gap-2 overflow-x-auto lg:hidden" aria-label="草稿状态">
-            {(['pending', 'copied', 'published'] as QueueView[]).map((item) => <Button key={item} type="button" size="sm" variant={view === item ? 'default' : 'outline'} onClick={() => switchView(item)}>{VIEW_LABELS[item]}{item === 'pending' ? ` ${status?.pending ?? 0}` : ''}</Button>)}
+            {(['new', 'pending', 'copied', 'published', 'skipped', 'logs'] as QueueView[]).map((item) => <Button key={item} type="button" size="sm" variant={view === item ? 'default' : 'outline'} onClick={() => switchView(item)}>{VIEW_LABELS[item]}{item === 'pending' ? ` ${status?.pending ?? 0}` : ''}</Button>)}
           </div>
 
-          {drafts.length > 0 && <div className="mb-4 flex gap-2 overflow-x-auto pb-1" aria-label="审核队列">
+          {view === 'new' && <div className="space-y-3">{messages.map((message) => <article key={message.id} className="rounded-2xl border border-border bg-card p-4 shadow-sm"><div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Badge variant="outline">{message.status}</Badge><span>{message.source}</span><span>{formatTime(message.receivedAt)}</span>{message.senderName && <span>发送者：{message.senderName}</span>}</div><p className="mt-3 whitespace-pre-wrap text-sm leading-6">{message.sanitizedText}</p>{message.sourceUrl && <a className="mt-2 block truncate text-xs text-primary underline" href={message.sourceUrl} target="_blank" rel="noreferrer">{message.sourceUrl}</a>}<p className="mt-2 text-[11px] text-muted-foreground">消息 ID：{message.messageId}</p></article>)}{!loading && !messages.length && <EmptyState text="暂无新消息，飞书采集群的新消息会自动出现在这里" />}</div>}
+          {view === 'logs' && <div className="space-y-2">{logs.map((log) => <article key={log.id} className="rounded-xl border border-border bg-card p-3 text-xs"><div className="flex justify-between gap-3"><span className="font-medium">{log.action}</span><span className="text-muted-foreground">{formatTime(log.createdAt)}</span></div><p className="mt-1 text-muted-foreground">{log.entityType} / {log.entityId} · {log.actor}</p></article>)}{!loading && !logs.length && <EmptyState text="暂无运行日志" />}</div>}
+
+          {view !== 'new' && view !== 'logs' && drafts.length > 0 && <div className="mb-4 flex gap-2 overflow-x-auto pb-1" aria-label="审核队列">
             {drafts.map((draft, index) => <QueuePill key={draft.id} active={draft.id === selected?.id} index={String(index + 1).padStart(2, '0')} title={draft.title} onClick={() => setSelectedId(draft.id)} />)}
           </div>}
 
-          {selected ? <article className="overflow-hidden rounded-[22px] border border-border bg-card shadow-[0_16px_50px_-32px_rgba(41,37,36,0.35)]">
+          {view !== 'new' && view !== 'logs' && selected ? <article className="overflow-hidden rounded-[22px] border border-border bg-card shadow-[0_16px_50px_-32px_rgba(41,37,36,0.35)]">
             <div className="border-b border-border px-4 py-4 sm:px-6">
               <div className="flex flex-wrap items-center gap-2"><Badge className="bg-amber-100 text-amber-950 hover:bg-amber-100">{VIEW_LABELS[view]}</Badge><Badge variant="outline">{selected.category}</Badge><span className="ml-auto text-xs text-muted-foreground">{formatTime(selected.createdAt)} 生成</span></div>
               <h2 className="mt-3 text-lg font-semibold leading-snug sm:text-xl">{selected.title}</h2>
@@ -184,7 +208,7 @@ export function ReviewDashboard() {
             <div className="px-4 py-5 sm:px-6">
               <div className="mb-2 flex items-center justify-between"><label className="text-sm font-medium" htmlFor="draft">雪球动态草稿</label><span className="text-xs tabular-nums text-muted-foreground">{selected.body.length} 字</span></div>
               <Textarea id="draft" value={selected.body} onChange={(event) => setDrafts((items) => items.map((item) => item.id === selected.id ? { ...item, body: event.target.value } : item))} onBlur={() => void savePatch({ body: selected.body })} className="min-h-64 resize-none rounded-xl border-border bg-background p-4 text-[15px] leading-7 shadow-inner sm:min-h-56" />
-              <div className="mt-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900"><ShieldCheck className="size-4 shrink-0" />已通过基础敏感信息检查，发布前请核对数字与来源</div>
+              <div className="mt-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900"><ShieldCheck className="size-4 shrink-0" />{selected.metadata?.organizationMode === 'ai' ? 'AI 整理完成，发布前请核验事实' : '规则模式整理，未调用 AI；发布前请核对数字与来源'}</div>
               {selected.metadata && <div className="mt-4 grid gap-3 text-xs sm:grid-cols-3">
                 <details className="rounded-xl border border-border bg-muted/30 p-3 sm:col-span-3"><summary className="cursor-pointer font-medium">原文对照（已脱敏）</summary><p className="mt-2 whitespace-pre-wrap leading-5 text-muted-foreground">{selected.metadata.originalText || '暂无原文记录'}</p></details>
                 <div className="rounded-xl border border-border p-3"><p className="font-medium">重要信息提炼</p><ul className="mt-2 space-y-1 text-muted-foreground">{(selected.metadata.keyPoints ?? []).map((point) => <li key={point}>• {point}</li>)}</ul></div>
@@ -193,9 +217,9 @@ export function ReviewDashboard() {
             </div>
             <div className="hidden border-t border-border bg-muted/30 px-6 py-4 sm:flex sm:items-center sm:justify-between">
               {view === 'pending' ? <Button variant="ghost" onClick={() => void savePatch({ status: 'skipped' })}>暂不处理</Button> : <span />}
-              <div className="flex gap-2"><Button variant="outline" onClick={() => void copyDraft()}><Clipboard />复制内容</Button>{view === 'copied' ? <Button onClick={() => void savePatch({ status: 'published' })}><CheckCircle2 />标记已发布</Button> : view === 'pending' ? <Button onClick={() => void copyDraft(true)} className="bg-[#e6b10e] text-[#241c05] hover:bg-[#d3a20d]">复制并打开雪球<ExternalLink /></Button> : null}</div>
+              <div className="flex gap-2"><Button variant="outline" onClick={() => void regenerate()}><RefreshCw />重新生成</Button><Button variant="outline" onClick={() => void copyDraft()}><Clipboard />复制内容</Button>{view === 'copied' ? <Button onClick={() => void savePatch({ status: 'published' })}><CheckCircle2 />标记已发布</Button> : view === 'pending' ? <Button onClick={() => void copyDraft(true)} className="bg-[#e6b10e] text-[#241c05] hover:bg-[#d3a20d]">复制并打开雪球<ExternalLink /></Button> : null}</div>
             </div>
-          </article> : !loading && <div className="rounded-[22px] border border-dashed border-border bg-card px-6 py-16 text-center">
+          </article> : view !== 'new' && view !== 'logs' && !loading && <div className="rounded-[22px] border border-dashed border-border bg-card px-6 py-16 text-center">
             <CheckCircle2 className="mx-auto size-10 text-emerald-700" /><h2 className="mt-4 text-lg font-semibold">审核队列已清空</h2><p className="mt-1 text-sm text-muted-foreground">新消息通过筛选后会出现在这里</p>
             {status?.mode === 'simulation' && <Button className="mt-5" onClick={() => void createDemoDraft()}><Sparkles />生成演示草稿</Button>}
           </div>}
@@ -216,6 +240,10 @@ function StatusRow({ label, value }: { label: string; value: string }) {
 
 function QueuePill({ active, index, title, onClick }: { active: boolean; index: string; title: string; onClick: () => void }) {
   return <button type="button" onClick={onClick} className={`flex max-w-56 min-w-fit items-center gap-2 rounded-full border px-3 py-2 text-sm transition ${active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-muted-foreground hover:text-foreground'}`}><span className="font-mono text-[10px] opacity-70">{index}</span><span className="truncate">{title}</span></button>;
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <div className="rounded-2xl border border-dashed border-border bg-card px-6 py-12 text-center text-sm text-muted-foreground">{text}</div>;
 }
 
 function formatTime(timestamp: number) {

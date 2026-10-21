@@ -10,6 +10,10 @@ declare namespace Cloudflare {
     FEISHU_TOKEN_ENCRYPTION_KEY?: string;
     OPENAI_API_KEY?: string;
     OPENAI_MODEL?: string;
+    AI_PROVIDER?: string;
+    AI_API_KEY?: string;
+    AI_MODEL?: string;
+    AI_BASE_URL?: string;
     SIMULATION_MODE?: string;
     SITE_OWNER_USER_ID?: string;
   }

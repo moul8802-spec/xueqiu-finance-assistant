@@ -48,28 +48,28 @@ jobs:
         shell: pwsh
         env:
           XUEQIU_NO_BROWSER: '1'
+          XUEQIU_PORT: '8791'
         run: |
           $exe = Resolve-Path 'dist/雪球财经助手-自动采集版.exe'
           $p = Start-Process -FilePath $exe -PassThru
           try {
-            Start-Sleep -Seconds 6
             $ok = $false
-            $ports = 1024..65535
-            $procs = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $p.Id }
-            foreach ($c in $procs) {
-              try {
-                $r = Invoke-WebRequest ("http://127.0.0.1:" + $c.LocalPort + "/") -UseBasicParsing -TimeoutSec 2
-                if ($r.StatusCode -eq 200 -and $r.Content -match '自动财经采集') {
-                  $port = $c.LocalPort; $ok = $true; break
-                }
-              } catch {}
+            1..40 | ForEach-Object {
+              if (-not $ok) {
+                try {
+                  $r = Invoke-WebRequest 'http://127.0.0.1:8791/' -UseBasicParsing -TimeoutSec 1
+                  if ($r.StatusCode -eq 200 -and $r.Content -match '自动财经采集') { $ok = $true }
+                } catch {}
+                if (-not $ok) { Start-Sleep -Milliseconds 500 }
+              }
             }
             if (-not $ok) { throw 'EXE 启动后本地网页未通过验证' }
-            $s = Invoke-RestMethod ("http://127.0.0.1:" + $port + "/api/status")
+            $s = Invoke-RestMethod 'http://127.0.0.1:8791/api/status'
             if ($null -eq $s.total) { throw '状态接口异常' }
-            Write-Host "EXE runtime test passed on port $port"
+            Write-Host 'EXE runtime test passed on port 8791'
           } finally {
             if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            Get-Process | Where-Object { $_.ProcessName -like '*雪球财经助手*' } | Stop-Process -Force -ErrorAction SilentlyContinue
           }
 
       - name: Package artifact

@@ -51,10 +51,15 @@ def choose_port(log_file: Path) -> int:
     raise RuntimeError(f"端口 {requested}-{requested + 19} 均被占用")
 
 
-def wait_for_http(port: int, log_file: Path, timeout: float = 60.0) -> None:
+def wait_for_http(port: int, log_file: Path, process: subprocess.Popen[bytes], server_log: Path, timeout: float = 60.0) -> None:
     deadline = time.monotonic() + timeout
     last_error = ""
     while time.monotonic() < deadline:
+        if process.poll() is not None:
+            tail = ""
+            if server_log.exists():
+                tail = server_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+            raise RuntimeError(f"服务进程提前退出（exit={process.returncode}）：{tail}")
         try:
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
             connection.request("GET", "/")
@@ -131,10 +136,13 @@ def main() -> int:
         "--show-interactive-dev-session",
         "false",
     ]
-    log_line(log_file, f"启动服务：端口 {port}")
+    log_line(log_file, f"启动服务：端口 {port}，资源目录 {root}")
     process = subprocess.Popen(
         command,
-        cwd=str(data),
+        # Wrangler resolves package assets and the generated worker relative to
+        # the bundled resource directory.  Keep the writable D1 state in
+        # --persist-to, but run the child from the read-only bundle root.
+        cwd=str(root),
         env=env,
         stdout=server_handle,
         stderr=subprocess.STDOUT,
@@ -144,7 +152,7 @@ def main() -> int:
     atexit.register(lambda: process.poll() is None and process.terminate())
 
     try:
-        wait_for_http(port, log_file)
+        wait_for_http(port, log_file, process, server_log)
         url = f"http://127.0.0.1:{port}/"
         log_line(log_file, f"请在浏览器打开：{url}")
         if os.environ.get("XUEQIU_NO_BROWSER") != "1":

@@ -25,7 +25,18 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile rss_desktop/app.py
-          python -c "import importlib.util; p='rss_desktop/app.py'; s=importlib.util.spec_from_file_location('rssapp',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); raw='<?xml version=\"1.0\"?><rss><channel><item><title>A股半导体板块出现新消息</title><description>测试摘要</description><link>https://example.com/a</link></item></channel></rss>'.encode('utf-8'); rows=m.parse(raw); assert rows and rows[0]['title'].startswith('A股'); print('parse ok')"
+          @'
+          import importlib.util
+          p = "rss_desktop/app.py"
+          spec = importlib.util.spec_from_file_location("rssapp", p)
+          m = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          raw = """<rss><channel><item><title>A股半导体板块出现新消息</title><description>测试摘要</description><link>https://example.com/a</link></item></channel></rss>""".encode("utf-8")
+          rows = m.parse(raw)
+          assert rows and rows[0]["title"].startswith("A股")
+          print("parse ok")
+          '@ | Set-Content -Encoding utf8 smoke.py
+          python smoke.py
 
       - name: Build standalone EXE
         shell: pwsh

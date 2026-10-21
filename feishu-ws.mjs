@@ -119,9 +119,9 @@ async function start() {
   await postBridge({ type: 'connection', state: 'starting' });
   const client = new Lark.WSClient({
     appId, appSecret, autoReconnect: true, loggerLevel: Lark.LoggerLevel.warn,
-    onReady: () => { const state = allowlist.size ? 'connected' : 'waiting_binding'; console.log('飞书 WebSocket 已连接'); void postBridge({ type: 'connection', state }); },
+    onReady: () => { const state = allowlist.size ? 'connected' : 'waiting_for_binding'; console.log('飞书 WebSocket 已连接'); void postBridge({ type: 'connection', state }); },
     onReconnecting: () => { console.warn('飞书 WebSocket 断开，正在重连'); void postBridge({ type: 'connection', state: 'reconnecting' }); },
-    onReconnected: () => { const state = allowlist.size ? 'connected' : 'waiting_binding'; console.log('飞书 WebSocket 已重连'); void postBridge({ type: 'connection', state }); },
+    onReconnected: () => { const state = allowlist.size ? 'connected' : 'waiting_for_binding'; console.log('飞书 WebSocket 已重连'); void postBridge({ type: 'connection', state }); },
     onError: (error) => { console.error(`飞书 WebSocket 错误：${error.message}`); void postBridge({ type: 'connection', state: 'error', error: error.message }); },
   });
   const eventDispatcher = new Lark.EventDispatcher({}).register({ 'im.message.receive_v1': onMessage });

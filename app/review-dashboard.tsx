@@ -183,7 +183,8 @@ export function ReviewDashboard() {
                 <StatusRow label="飞书长连接" value={connectionLabel(status?.listener?.connectionState)} />
                 <StatusRow label="群白名单" value={`${status?.allowedChats ?? 0} 个`} />
                 <StatusRow label="今日去重" value={`${status?.duplicatesToday ?? 0} 条`} />
-                <StatusRow label="最近接收" value={status?.listener?.lastSuccessAt ? formatTime(status.listener.lastSuccessAt) : '尚无'} />
+                <StatusRow label="最近接收" value={status?.listener?.lastReceivedAt ? formatTime(status.listener.lastReceivedAt) : '尚无'} />
+                <StatusRow label="最近错误" value={status?.listener?.lastError || '无'} />
               </div>
             </div>
           </div>
@@ -272,7 +273,7 @@ function formatTime(timestamp: number) {
 }
 
 function connectionLabel(state?: string) {
-  return ({ connected: '已连接', waiting_binding: '等待绑定', starting: '启动中', reconnecting: '重连中', disconnected: '未连接', error: '错误', disabled: '未配置' } as Record<string, string>)[state || 'disabled'] || '未连接';
+  return ({ connected: '已连接', waiting_for_binding: '等待绑定', starting: '启动中', reconnecting: '重连中', disconnected: '未连接', error: '错误', disabled: '未配置' } as Record<string, string>)[state || 'disabled'] || '未连接';
 }
 
 function CollectorBindingPanel({ binding, onAction, onUnbind }: { binding?: SystemStatus['binding']; onAction: (action: 'bind' | 'ignore', candidate?: { chatId: string; chatName: string }) => Promise<void>; onUnbind: () => Promise<void> }) {

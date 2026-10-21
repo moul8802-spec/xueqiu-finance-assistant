@@ -181,6 +181,8 @@ export function ReviewDashboard() {
               <div className="mb-3 flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-emerald-700" />接入状态</div>
               <div className="space-y-2.5 text-xs text-muted-foreground">
                 <StatusRow label="飞书长连接" value={connectionLabel(status?.listener?.connectionState)} />
+                <StatusRow label="采集群绑定" value={bindingLabel(status?.binding?.status)} />
+                <StatusRow label="当前群" value={status?.binding?.boundChatName || '未绑定'} />
                 <StatusRow label="群白名单" value={`${status?.allowedChats ?? 0} 个`} />
                 <StatusRow label="今日去重" value={`${status?.duplicatesToday ?? 0} 条`} />
                 <StatusRow label="最近接收" value={status?.listener?.lastReceivedAt ? formatTime(status.listener.lastReceivedAt) : '尚无'} />
@@ -199,7 +201,7 @@ export function ReviewDashboard() {
           <CollectorBindingPanel binding={status?.binding} onAction={changeBinding} onUnbind={unbind} />
           <div className="mb-5 flex items-end justify-between gap-3">
             <div>
-              <div className={`mb-1 flex items-center gap-2 text-xs font-medium ${status?.listener?.connectionState === 'connected' ? 'text-emerald-700' : 'text-amber-700'}`}><CircleDot className="size-3 fill-current" />{status?.listener?.connectionState === 'connected' ? '飞书长连接已连接' : status?.listener?.connectionState === 'reconnecting' ? '飞书长连接重连中' : '等待飞书长连接'}</div>
+              <div className={`mb-1 flex items-center gap-2 text-xs font-medium ${['connected', 'waiting_for_binding'].includes(status?.listener?.connectionState || '') ? 'text-emerald-700' : 'text-amber-700'}`}><CircleDot className="size-3 fill-current" />{['connected', 'waiting_for_binding'].includes(status?.listener?.connectionState || '') ? '飞书长连接已连接' : status?.listener?.connectionState === 'reconnecting' ? '飞书长连接重连中' : '等待飞书长连接'}{status?.listener?.connectionState === 'waiting_for_binding' ? ` · ${bindingLabel(status?.binding?.status)}` : ''}</div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{VIEW_LABELS[view]}</h1>
               <p className="mt-1 text-sm text-muted-foreground">{loading ? '正在读取草稿…' : `${drafts.length} 条${VIEW_LABELS[view]}草稿`}</p>
             </div>
@@ -273,7 +275,11 @@ function formatTime(timestamp: number) {
 }
 
 function connectionLabel(state?: string) {
-  return ({ connected: '已连接', waiting_for_binding: '等待绑定', starting: '启动中', reconnecting: '重连中', disconnected: '未连接', error: '错误', disabled: '未配置' } as Record<string, string>)[state || 'disabled'] || '未连接';
+  return ({ connected: '已连接', waiting_for_binding: '已连接', starting: '启动中', reconnecting: '重连中', disconnected: '未连接', error: '错误', disabled: '未配置' } as Record<string, string>)[state || 'disabled'] || '未连接';
+}
+
+function bindingLabel(state?: NonNullable<SystemStatus['binding']>['status']) {
+  return ({ bound: '已绑定', pending: '等待确认', unbound: '等待绑定' } as Record<string, string>)[state || 'unbound'] || '等待绑定';
 }
 
 function CollectorBindingPanel({ binding, onAction, onUnbind }: { binding?: SystemStatus['binding']; onAction: (action: 'bind' | 'ignore', candidate?: { chatId: string; chatName: string }) => Promise<void>; onUnbind: () => Promise<void> }) {

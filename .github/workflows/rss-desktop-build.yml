@@ -1,0 +1,92 @@
+name: RSS Auto Collector Windows Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rss_desktop/app.py'
+      - '.github/workflows/rss-desktop-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Unit smoke test
+        shell: pwsh
+        run: |
+          python -m py_compile rss_desktop/app.py
+          python - <<'PY'
+          import importlib.util, tempfile, os
+          p='rss_desktop/app.py'
+          spec=importlib.util.spec_from_file_location('rssapp',p)
+          m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          raw=b'''<?xml version="1.0"?><rss><channel><item><title>A股半导体板块出现新消息</title><description>测试摘要</description><link>https://example.com/a</link></item></channel></rss>'''
+          rows=m.parse(raw)
+          assert rows and rows[0]['title'].startswith('A股')
+          print('parse ok')
+          PY
+
+      - name: Build standalone EXE
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pyinstaller
+          pyinstaller --noconfirm --clean --onefile --windowed --name "雪球财经助手-自动采集版" rss_desktop/app.py
+
+      - name: Run real EXE and test HTTP
+        shell: pwsh
+        env:
+          XUEQIU_NO_BROWSER: '1'
+        run: |
+          $exe = Resolve-Path 'dist/雪球财经助手-自动采集版.exe'
+          $p = Start-Process -FilePath $exe -PassThru
+          try {
+            Start-Sleep -Seconds 6
+            $ok = $false
+            $ports = 1024..65535
+            $procs = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $p.Id }
+            foreach ($c in $procs) {
+              try {
+                $r = Invoke-WebRequest ("http://127.0.0.1:" + $c.LocalPort + "/") -UseBasicParsing -TimeoutSec 2
+                if ($r.StatusCode -eq 200 -and $r.Content -match '自动财经采集') {
+                  $port = $c.LocalPort; $ok = $true; break
+                }
+              } catch {}
+            }
+            if (-not $ok) { throw 'EXE 启动后本地网页未通过验证' }
+            $s = Invoke-RestMethod ("http://127.0.0.1:" + $port + "/api/status")
+            if ($null -eq $s.total) { throw '状态接口异常' }
+            Write-Host "EXE runtime test passed on port $port"
+          } finally {
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          }
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          Copy-Item 'dist/雪球财经助手-自动采集版.exe' 'artifact/雪球财经助手-自动采集版.exe'
+          Get-FileHash 'artifact/雪球财经助手-自动采集版.exe' -Algorithm SHA256 | Format-List | Out-File -Encoding utf8 'artifact/SHA256.txt'
+          @"
+          版本：自动采集版 v1.2
+          功能：公开 RSS/Atom 自动采集、15分钟轮询、关键词筛选、去重、生成待审草稿、本地 SQLite
+          使用：双击 EXE，浏览器自动打开本地页面
+          不需要：Python、Node、PATH 配置
+          未包含：受限飞书群自动采集、雪球无人值守自动发帖
+          "@ | Set-Content -Encoding utf8 'artifact/使用说明.txt'
+          Compress-Archive -Path 'artifact/雪球财经助手-自动采集版.exe','artifact/使用说明.txt','artifact/SHA256.txt' -DestinationPath 'artifact/雪球财经助手-RSS自动采集-Windows免Python-v1.2.zip' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xueqiu-rss-auto-windows-v1.2
+          path: artifact
+          if-no-files-found: error

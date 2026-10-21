@@ -32,7 +32,14 @@ def log_line(log_file: Path, message: str) -> None:
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     with log_file.open("a", encoding="utf-8") as handle:
         handle.write(f"[{stamp}] {message}\n")
-    print(message, flush=True)
+    try:
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        # Windows CI consoles may use cp1252 even when the app data is UTF-8.
+        # Keep the UTF-8 file log intact and never let diagnostic output stop
+        # the service before Wrangler starts.
+        safe = message.encode("ascii", errors="replace").decode("ascii")
+        print(safe, flush=True)
 
 
 def port_available(port: int) -> bool:

@@ -81,9 +81,9 @@ jobs:
           if (Test-Path $stderr) { Get-Content $stderr -Tail 80 }
           try {
             $ready = $false
-            1..120 | ForEach-Object {
+            1..60 | ForEach-Object {
               if (-not $ready) {
-                try { $r = Invoke-WebRequest http://127.0.0.1:8787/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ready = $true } } catch {}
+                try { $r = Invoke-WebRequest http://127.0.0.1:8787/ -UseBasicParsing -TimeoutSec 1; if ($r.StatusCode -eq 200) { $ready = $true } } catch {}
                 Start-Sleep -Milliseconds 500
               }
             }
@@ -115,9 +115,9 @@ jobs:
           $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
           try {
             $ready = $false
-            1..120 | ForEach-Object {
+            1..60 | ForEach-Object {
               if (-not $ready) {
-                try { $r = Invoke-WebRequest http://127.0.0.1:8788/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ready = $true } } catch {}
+                try { $r = Invoke-WebRequest http://127.0.0.1:8788/ -UseBasicParsing -TimeoutSec 1; if ($r.StatusCode -eq 200) { $ready = $true } } catch {}
                 Start-Sleep -Milliseconds 500
               }
             }
@@ -163,8 +163,8 @@ jobs:
           $env:XUEQIU_NO_BROWSER = '1'
           $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
           try {
-            1..120 | ForEach-Object {
-              try { $r = Invoke-WebRequest http://127.0.0.1:8789/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { break } } catch {}
+            1..60 | ForEach-Object {
+              try { $r = Invoke-WebRequest http://127.0.0.1:8789/ -UseBasicParsing -TimeoutSec 1; if ($r.StatusCode -eq 200) { break } } catch {}
               Start-Sleep -Milliseconds 500
             }
             $edge = (Get-Command msedge.exe -ErrorAction SilentlyContinue).Source

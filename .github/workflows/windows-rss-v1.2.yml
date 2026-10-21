@@ -1,0 +1,59 @@
+name: Build RSS Windows v1.2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'build-src/xueqiu-rss-v1.2.zip'
+      - '.github/workflows/windows-rss-v1.2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Extract correct RSS desktop source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .rss-src | Out-Null
+          Expand-Archive -LiteralPath 'build-src/xueqiu-rss-v1.2.zip' -DestinationPath '.rss-src' -Force
+          Get-ChildItem '.rss-src/雪球财经助手'
+      - name: Build and test real Windows EXE
+        shell: pwsh
+        working-directory: .rss-src/雪球财经助手
+        run: ./构建Windows独立EXE.ps1
+      - name: Capture real EXE UI
+        shell: pwsh
+        working-directory: .rss-src/雪球财经助手
+        run: |
+          python -m pip install --disable-pip-version-check playwright
+          python -m playwright install chromium
+          python ./windows_gui_capture.py
+      - name: Collect final artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force rss-artifact | Out-Null
+          Copy-Item '.rss-src/雪球财经助手/release/雪球财经助手-Windows免Python-v1.2.zip' 'rss-artifact/雪球财经助手-RSS自动采集-Windows免Python-v1.2.zip'
+          Copy-Item '.rss-src/雪球财经助手/windows-evidence/*' 'rss-artifact/' -Recurse -Force
+          Get-FileHash '.rss-src/雪球财经助手/release/雪球财经助手-Windows免Python/雪球财经助手.exe' -Algorithm SHA256 | Format-List | Out-File -Encoding utf8 'rss-artifact/exe-sha256.txt'
+          @"
+          build=Windows-latest
+          product=RSS/Atom automatic public finance collector
+          poll_interval=15 minutes by default
+          manual_import=available but not primary
+          feishu_restricted_groups=not included
+          xueqiu_auto_post=not included
+          "@ | Set-Content -Encoding utf8 'rss-artifact/BUILD-NOTES.txt'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xueqiu-rss-windows-v1.2-tested
+          path: rss-artifact
+          if-no-files-found: error

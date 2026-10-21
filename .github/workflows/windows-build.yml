@@ -68,7 +68,7 @@ jobs:
             $pids = @(Get-CimInstance Win32_Process | Where-Object {
               $_.CommandLine -and $_.CommandLine -like '*雪球财经助手测试*'
             } | Select-Object -ExpandProperty ProcessId)
-            foreach ($pid in $pids) { try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {} }
+            foreach ($processId in $pids) { try { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue } catch {} }
           }
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           New-Item -ItemType Directory -Force $testDir | Out-Null
@@ -122,7 +122,7 @@ jobs:
             $pids = @(Get-CimInstance Win32_Process | Where-Object {
               $_.CommandLine -and $_.CommandLine -like '*雪球财经助手测试*'
             } | Select-Object -ExpandProperty ProcessId)
-            foreach ($pid in $pids) { try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {} }
+            foreach ($processId in $pids) { try { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue } catch {} }
           }
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
@@ -154,7 +154,7 @@ jobs:
             $pids = @(Get-CimInstance Win32_Process | Where-Object {
               $_.CommandLine -and $_.CommandLine -like '*雪球财经助手测试*'
             } | Select-Object -ExpandProperty ProcessId)
-            foreach ($pid in $pids) { try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {} }
+            foreach ($processId in $pids) { try { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue } catch {} }
           }
           Stop-XueqiuTestProcesses
           $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8787)

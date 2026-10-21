@@ -51,7 +51,7 @@ def choose_port(log_file: Path) -> int:
     raise RuntimeError(f"端口 {requested}-{requested + 19} 均被占用")
 
 
-def wait_for_http(port: int, log_file: Path, process: subprocess.Popen[bytes], server_log: Path, timeout: float = 60.0) -> None:
+def wait_for_http(port: int, log_file: Path, process: subprocess.Popen, server_log: Path, timeout: float = 60.0) -> None:
     deadline = time.monotonic() + timeout
     last_error = ""
     while time.monotonic() < deadline:

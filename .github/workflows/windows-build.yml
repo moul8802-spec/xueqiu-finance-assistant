@@ -69,7 +69,16 @@ jobs:
           Copy-Item dist\雪球财经助手 $testDir -Recurse -Force
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
           $env:XUEQIU_PORT = '8787'
-          $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
+          Write-Host "EXE exists=$((Test-Path $exe)) size=$((Get-Item $exe).Length) path=$exe"
+          $stdout = Join-Path $testDir 'launcher.stdout.log'
+          $stderr = Join-Path $testDir 'launcher.stderr.log'
+          $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds 5
+          $proc.Refresh()
+          $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { 'running' }
+          Write-Host "EXE pid=$($proc.Id) exited=$($proc.HasExited) exitcode=$exitCode"
+          if (Test-Path $stdout) { Get-Content $stdout -Tail 40 }
+          if (Test-Path $stderr) { Get-Content $stderr -Tail 80 }
           try {
             $ready = $false
             1..120 | ForEach-Object {

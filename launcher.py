@@ -123,12 +123,20 @@ def main() -> int:
     allowed_ids = local_vars.get("FEISHU_ALLOWED_CHAT_IDS", "")
     allowed_names = local_vars.get("FEISHU_ALLOWED_CHAT_NAMES", "")
     simulation = local_vars.get("SIMULATION_MODE", "false").lower() == "true" or os.environ.get("XUEQIU_TEST_MODE") == "1"
+    if simulation:
+        allowed_ids = allowed_ids or "simulated-finance-group"
+        allowed_names = allowed_names or "模拟财经群"
+    # The legacy webhook token is only needed by the CI simulation checks. In a
+    # real WebSocket run it stays empty and no public callback is used.
+    verification_token = local_vars.get("FEISHU_VERIFICATION_TOKEN", "")
+    if simulation and not verification_token:
+        verification_token = "local-test-token"
     server_log = data / "logs" / "server.log"
     server_log.parent.mkdir(parents=True, exist_ok=True)
     server_handle = server_log.open("a", encoding="utf-8")
     env = os.environ.copy()
     env.update({"WRANGLER_SEND_METRICS": "false", "NO_COLOR": "1"})
-    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"FEISHU_WS_ENABLED:{str(not simulation).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
+    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"FEISHU_VERIFICATION_TOKEN:{verification_token}", "--var", f"FEISHU_WS_ENABLED:{str(not simulation).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
     log_line(log_file, f"启动本地审核服务：端口 {port}")
     server = subprocess.Popen(command, cwd=str(root), env=env, stdout=server_handle, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     ws_log = (data / "logs" / "feishu-ws.log").open("a", encoding="utf-8")
@@ -162,3 +170,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

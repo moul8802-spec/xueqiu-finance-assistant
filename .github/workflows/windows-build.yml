@@ -64,6 +64,12 @@ jobs:
         env:
           XUEQIU_NO_BROWSER: '1'
         run: |
+          function Stop-XueqiuTestProcesses {
+            $pids = @(Get-CimInstance Win32_Process | Where-Object {
+              $_.CommandLine -and $_.CommandLine -like '*雪球财经助手测试*'
+            } | Select-Object -ExpandProperty ProcessId)
+            foreach ($pid in $pids) { try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {} }
+          }
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           New-Item -ItemType Directory -Force $testDir | Out-Null
           Copy-Item dist\雪球财经助手 $testDir -Recurse -Force
@@ -103,6 +109,8 @@ jobs:
             throw
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            Start-Sleep -Seconds 1
+            Stop-XueqiuTestProcesses
           }
 
       - name: Restart EXE and verify SQLite persistence
@@ -110,6 +118,12 @@ jobs:
         env:
           XUEQIU_NO_BROWSER: '1'
         run: |
+          function Stop-XueqiuTestProcesses {
+            $pids = @(Get-CimInstance Win32_Process | Where-Object {
+              $_.CommandLine -and $_.CommandLine -like '*雪球财经助手测试*'
+            } | Select-Object -ExpandProperty ProcessId)
+            foreach ($pid in $pids) { try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {} }
+          }
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
           $env:XUEQIU_PORT = '8788'
@@ -127,6 +141,8 @@ jobs:
             if (-not $drafts.drafts -or $drafts.drafts.Count -lt 1) { throw '重启后 SQLite/D1 本地数据未保留' }
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            Start-Sleep -Seconds 1
+            Stop-XueqiuTestProcesses
           }
 
       - name: Verify occupied port handling
@@ -134,6 +150,13 @@ jobs:
         env:
           XUEQIU_NO_BROWSER: '1'
         run: |
+          function Stop-XueqiuTestProcesses {
+            $pids = @(Get-CimInstance Win32_Process | Where-Object {
+              $_.CommandLine -and $_.CommandLine -like '*雪球财经助手测试*'
+            } | Select-Object -ExpandProperty ProcessId)
+            foreach ($pid in $pids) { try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {} }
+          }
+          Stop-XueqiuTestProcesses
           $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8787)
           $listener.Start()
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
@@ -141,12 +164,24 @@ jobs:
           $env:XUEQIU_PORT = '8787'
           $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
           try {
-            Start-Sleep -Seconds 8
+            $fallbackReady = $false
+            1..60 | ForEach-Object {
+              if (-not $fallbackReady) {
+                try { $r = Invoke-WebRequest http://127.0.0.1:8788/ -UseBasicParsing -TimeoutSec 1; if ($r.StatusCode -eq 200) { $fallbackReady = $true } } catch {}
+                Start-Sleep -Milliseconds 500
+              }
+            }
             $log = Join-Path $env:LOCALAPPDATA '雪球财经助手\logs\launcher.log'
-            if (-not (Test-Path $log) -or -not (Select-String -Path $log -Pattern '已占用，改用端口')) { throw '端口占用时未自动切换端口' }
+            if (-not $fallbackReady) { throw '端口占用时备用端口 8788 未响应' }
+            if (-not (Test-Path $log) -or -not (Select-String -Path $log -Pattern '已占用，改用端口')) {
+              if (Test-Path $log) { Get-Content $log -Tail 80 }
+              throw '端口占用时未自动切换端口'
+            }
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
             $listener.Stop()
+            Start-Sleep -Seconds 1
+            Stop-XueqiuTestProcesses
           }
 
       - name: Capture screenshot, logs, and SHA256
@@ -194,3 +229,4 @@ jobs:
           name: 雪球财经助手-Windows免Python
           path: artifacts
           if-no-files-found: error
+

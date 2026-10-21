@@ -192,6 +192,7 @@ jobs:
           Copy-Item dist\雪球财经助手 "$artifact\雪球财经助手" -Recurse -Force
           $exe = Join-Path $artifact '雪球财经助手\雪球财经助手.exe'
           $hash = Get-FileHash $exe -Algorithm SHA256
+          Write-Host "Windows EXE SHA256=$($hash.Hash)"
           $hash.Hash | Set-Content -Encoding ascii "$artifact\雪球财经助手.exe.sha256"
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
@@ -203,8 +204,15 @@ jobs:
               try { $r = Invoke-WebRequest http://127.0.0.1:8789/ -UseBasicParsing -TimeoutSec 1; if ($r.StatusCode -eq 200) { break } } catch {}
               Start-Sleep -Milliseconds 500
             }
-            $edge = (Get-Command msedge.exe -ErrorAction SilentlyContinue).Source
-            if ($edge) { & $edge --headless --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot="$artifact\windows-runtime.png" http://127.0.0.1:8789/ 2>$null }
+            $edgeCandidates = @(
+              (Get-Command msedge.exe -ErrorAction SilentlyContinue).Source,
+              (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+              (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+            ) | Where-Object { $_ -and (Test-Path $_) }
+            $edge = $edgeCandidates | Select-Object -First 1
+            if (-not $edge) { throw 'Windows Runner 未找到 Microsoft Edge，无法采集实际运行截图' }
+            & $edge --headless --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot="$artifact\windows-runtime.png" http://127.0.0.1:8789/ 2>$null
+            if (-not (Test-Path "$artifact\windows-runtime.png")) { throw 'Edge 截图命令未生成 windows-runtime.png' }
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
@@ -213,11 +221,13 @@ jobs:
           Compress-Archive -Path "$artifact\雪球财经助手" -DestinationPath "$artifact\雪球财经助手-Windows免Python.zip" -Force
           @"
           build=github-actions-windows-latest
+          exe_sha256=$($hash.Hash)
           web=local HTTP endpoint responded 200
           import=10 messages, duplicate removal, draft generation, edit/save, SQLite persistence
           restart=previous draft visible after EXE restart
           unicode=Chinese executable path and UI smoke-tested
           port_conflict=automatic fallback port verified
+          screenshot=windows-runtime.png captured by Microsoft Edge headless
           external_rss=not asserted by the app test; external feeds may change or be blocked
           feishu=restricted automatic collection is not included in this desktop build
           xueqiu=manual copy/open flow only; no automatic posting API

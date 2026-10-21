@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force .rss-src | Out-Null
-          Expand-Archive -LiteralPath 'build-src/xueqiu-rss-v1.2.zip' -DestinationPath '.rss-src' -Force
+          python -c "import zipfile; zipfile.ZipFile(r'build-src/xueqiu-rss-v1.2.zip').extractall(r'.rss-src')"
           Get-ChildItem '.rss-src/雪球财经助手'
       - name: Build and test real Windows EXE
         shell: pwsh

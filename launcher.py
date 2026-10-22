@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import http.client
+import json
 import os
 import secrets
 import socket
@@ -13,6 +14,8 @@ from pathlib import Path
 
 APP_NAME = "雪球财经助手"
 DEFAULT_PORT = 8787
+BUILD_ID = os.environ.get("XUEQIU_BUILD_ID", "dev-local")
+BUILD_TIME = os.environ.get("XUEQIU_BUILD_TIME", "local")
 
 
 def bundle_root() -> Path:
@@ -90,11 +93,22 @@ def wait_for_http(port: int, log_file: Path, process: subprocess.Popen, server_l
 
 
 def main() -> int:
+    global BUILD_ID, BUILD_TIME
     root = bundle_root()
+    build_info = root / "build-info.json"
+    if build_info.exists():
+        try:
+            metadata = json.loads(build_info.read_text(encoding="utf-8"))
+            BUILD_ID = str(metadata.get("commit", BUILD_ID))
+            BUILD_TIME = str(metadata.get("build_time", BUILD_TIME))
+        except (OSError, ValueError, TypeError):
+            pass
     data = data_root()
     data.mkdir(parents=True, exist_ok=True)
     (data / "state").mkdir(exist_ok=True)
     log_file = data / "logs" / "launcher.log"
+    if not log_file.exists() or log_file.stat().st_size == 0:
+        log_line(log_file, f"BUILD_ID={BUILD_ID} BUILD_TIME={BUILD_TIME}")
     vars_file = data / ".dev.vars"
     if not vars_file.exists():
         vars_file.write_text(
@@ -107,6 +121,11 @@ def main() -> int:
         )
         log_line(log_file, f"已创建配置文件：{vars_file}；请填写飞书 App ID 和 App Secret，首次启动后在审核页绑定财经采集群")
     local_vars = read_vars(vars_file)
+    # CI can inject non-persistent smoke-test credentials without changing the
+    # user's on-disk .dev.vars.  A real .dev.vars value always wins.
+    for key in ("FEISHU_APP_ID", "FEISHU_APP_SECRET"):
+        if not local_vars.get(key):
+            local_vars[key] = os.environ.get(key, "")
     node = root / "runtime" / "node.exe"
     wrangler = root / "node_modules" / "wrangler" / "bin" / "wrangler.js"
     config = root / "dist" / "server" / "wrangler.json"
@@ -122,7 +141,13 @@ def main() -> int:
     bridge_token = secrets.token_urlsafe(32)
     allowed_ids = local_vars.get("FEISHU_ALLOWED_CHAT_IDS", "")
     allowed_names = local_vars.get("FEISHU_ALLOWED_CHAT_NAMES", "")
+    # Treat the template placeholder as an empty allowlist.  This preserves the
+    # user's .dev.vars file while enabling first-message binding on a fresh PC.
+    if allowed_ids.startswith("这里填") or allowed_ids.lower() in {"your-chat-id", "changeme", "todo"}:
+        allowed_ids = ""
+        allowed_names = ""
     simulation = local_vars.get("SIMULATION_MODE", "false").lower() == "true" or os.environ.get("XUEQIU_TEST_MODE") == "1"
+    force_ws = os.environ.get("XUEQIU_TEST_FORCE_WS") == "1"
     if simulation:
         allowed_ids = allowed_ids or "simulated-finance-group"
         allowed_names = allowed_names or "模拟财经群"
@@ -136,14 +161,15 @@ def main() -> int:
     server_handle = server_log.open("a", encoding="utf-8")
     env = os.environ.copy()
     env.update({"WRANGLER_SEND_METRICS": "false", "NO_COLOR": "1"})
-    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"LOCAL_DESKTOP_MODE:true", "--var", f"FEISHU_VERIFICATION_TOKEN:{verification_token}", "--var", f"FEISHU_WS_ENABLED:{str(not simulation).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
+    ws_enabled = (not simulation) or force_ws
+    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"LOCAL_DESKTOP_MODE:true", "--var", f"FEISHU_VERIFICATION_TOKEN:{verification_token}", "--var", f"FEISHU_WS_ENABLED:{str(ws_enabled).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
     log_line(log_file, f"启动本地审核服务：端口 {port}")
     server = subprocess.Popen(command, cwd=str(root), env=env, stdout=server_handle, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     ws_log = (data / "logs" / "feishu-ws.log").open("a", encoding="utf-8")
     ws_env = env.copy()
     ws_env.update(local_vars)
     ws_env.update({"FEISHU_WS_BRIDGE_URL": f"http://127.0.0.1:{port}/api/local/feishu", "FEISHU_WS_BRIDGE_TOKEN": bridge_token})
-    ws = subprocess.Popen([str(node), str(ws_script)], cwd=str(root), env=ws_env, stdout=ws_log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if not simulation else None
+    ws = subprocess.Popen([str(node), str(ws_script)], cwd=str(root), env=ws_env, stdout=ws_log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if ws_enabled else None
     atexit.register(lambda: server.poll() is None and server.terminate())
     if ws is not None:
         atexit.register(lambda: ws.poll() is None and ws.terminate())

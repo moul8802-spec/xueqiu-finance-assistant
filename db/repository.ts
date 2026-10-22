@@ -110,6 +110,7 @@ export async function ensureDatabase() {
     db.prepare("CREATE TABLE IF NOT EXISTS device_pairings (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, label TEXT NOT NULL, platform TEXT NOT NULL, token_hash TEXT NOT NULL, token_hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER, expires_at INTEGER)"),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_device_pairings_token_hash ON device_pairings(token_hash)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_device_pairings_actor ON device_pairings(actor_id, created_at)'),
+    db.prepare("CREATE TABLE IF NOT EXISTS ui_collector_state (id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'starting', pid INTEGER, window_title TEXT NOT NULL DEFAULT '', current_chat TEXT NOT NULL DEFAULT '', message_count INTEGER NOT NULL DEFAULT 0, last_summary TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', monitoring INTEGER NOT NULL DEFAULT 1, last_captured_at INTEGER, updated_at INTEGER NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, connection_state TEXT NOT NULL DEFAULT 'disabled', binding_status TEXT NOT NULL DEFAULT 'unbound', bound_chat_id TEXT, bound_chat_name TEXT, pending_chat_id TEXT, pending_chat_name TEXT, pending_message_id TEXT, pending_received_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, last_raw_event_at INTEGER, last_bridge_status INTEGER, updated_at INTEGER NOT NULL)"),
   ]);
   for (const statement of [
@@ -468,7 +469,7 @@ export async function processInboundMessage(input: InboundMessage) {
     ? await env.DB.prepare('SELECT chat_id, name FROM feishu_selected_chats WHERE actor_id = ? AND chat_id = ?')
       .bind(input.actorId, input.chatId).first<{ chat_id: string; name: string }>()
     : null;
-  const allowed = input.simulated || (selected ? true : allowedChatIds().includes(input.chatId));
+  const allowed = input.simulated || input.source === 'feishu_ui' || (selected ? true : allowedChatIds().includes(input.chatId));
   if (!allowed) {
     await log('source_rejected', 'feishu', 'message', input.messageId, { chatId: input.chatId, actorId: input.actorId ?? null });
     return { outcome: 'rejected' as const, reason: 'chat_not_allowed' };
@@ -645,6 +646,55 @@ export async function listInboundMessages(status?: string): Promise<InboundMessa
   }));
 }
 
+export type UiCollectorStatus = {
+  state: string;
+  pid: number | null;
+  windowTitle: string;
+  currentChat: string;
+  messageCount: number;
+  lastSummary: string;
+  lastError: string;
+  monitoring: boolean;
+  lastCapturedAt: number | null;
+  updatedAt: number;
+};
+
+function uiCollectorFromRow(row: Record<string, unknown> | null | undefined): UiCollectorStatus {
+  return {
+    state: row?.state ? String(row.state) : 'starting',
+    pid: row?.pid == null ? null : Number(row.pid),
+    windowTitle: row?.window_title ? String(row.window_title) : '',
+    currentChat: row?.current_chat ? String(row.current_chat) : '',
+    messageCount: Number(row?.message_count ?? 0),
+    lastSummary: row?.last_summary ? String(row.last_summary) : '',
+    lastError: row?.last_error ? String(row.last_error) : '',
+    monitoring: Number(row?.monitoring ?? 1) === 1,
+    lastCapturedAt: row?.last_captured_at == null ? null : Number(row.last_captured_at),
+    updatedAt: Number(row?.updated_at ?? Date.now()),
+  };
+}
+
+export async function getUiCollectorStatus(): Promise<UiCollectorStatus> {
+  await ensureDatabase();
+  const row = await env.DB.prepare('SELECT * FROM ui_collector_state WHERE id = ?').bind('feishu-ui').first<Record<string, unknown>>();
+  return uiCollectorFromRow(row);
+}
+
+export async function recordUiCollectorStatus(input: Partial<UiCollectorStatus>): Promise<UiCollectorStatus> {
+  await ensureDatabase();
+  const current = uiCollectorFromRow(await env.DB.prepare('SELECT * FROM ui_collector_state WHERE id = ?').bind('feishu-ui').first<Record<string, unknown>>());
+  const next = { ...current, ...input, updatedAt: Date.now() };
+  await env.DB.prepare(`INSERT INTO ui_collector_state (id, state, pid, window_title, current_chat, message_count, last_summary, last_error, monitoring, last_captured_at, updated_at)
+    VALUES ('feishu-ui', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET state=excluded.state, pid=excluded.pid, window_title=excluded.window_title, current_chat=excluded.current_chat, message_count=excluded.message_count, last_summary=excluded.last_summary, last_error=excluded.last_error, monitoring=excluded.monitoring, last_captured_at=excluded.last_captured_at, updated_at=excluded.updated_at`)
+    .bind(next.state, next.pid, next.windowTitle, next.currentChat, next.messageCount, next.lastSummary, next.lastError, next.monitoring ? 1 : 0, next.lastCapturedAt, next.updatedAt).run();
+  return next;
+}
+
+export async function setUiCollectorMonitoring(monitoring: boolean): Promise<UiCollectorStatus> {
+  return recordUiCollectorStatus({ monitoring, state: monitoring ? 'monitoring' : 'paused' });
+}
+
 export async function getSystemStatus() {
   await ensureDatabase();
   const [pending, duplicates, messages, collector] = await Promise.all([
@@ -652,8 +702,10 @@ export async function getSystemStatus() {
     env.DB.prepare("SELECT COUNT(*) AS count FROM messages WHERE status = 'duplicate' AND received_at > ?").bind(startOfToday()).first<{ count: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM messages WHERE received_at > ?').bind(startOfToday()).first<{ count: number }>(),
     env.DB.prepare('SELECT * FROM collector_state WHERE id = ?').bind('feishu').first<Record<string, unknown>>(),
+    env.DB.prepare('SELECT * FROM ui_collector_state WHERE id = ?').bind('feishu-ui').first<Record<string, unknown>>(),
   ]);
   const binding = collectorBindingFromRow(collector);
+  const uiCollector = uiCollectorFromRow(ui);
   return {
     mode: env.SIMULATION_MODE === 'true' ? 'simulation' : 'live',
     configured: Boolean((env.FEISHU_WS_ENABLED === 'true' || env.FEISHU_VERIFICATION_TOKEN) && (allowedChatIds().length || env.SITE_OWNER_USER_ID || env.LOCAL_DESKTOP_MODE === 'true')),
@@ -673,6 +725,7 @@ export async function getSystemStatus() {
       consecutiveFailures: Number(collector?.consecutive_failures ?? 0),
     },
     binding,
+    uiCollector,
   };
 }
 

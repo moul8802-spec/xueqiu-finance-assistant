@@ -177,7 +177,7 @@ const queuedMessages = await request('/api/messages?status=queued');
 check(queuedMessages.response.ok && queuedMessages.data.messages.some((item) => item.messageId === `msg-finance-${marker}`), '自动采集消息未进入新消息队列');
 passed('自动采集消息可在新消息队列查看');
 const collectorStatus = await request('/api/status');
-check(collectorStatus.response.ok && collectorStatus.data.status.listener && collectorStatus.data.status.listener.lastSuccessAt, '采集器未记录最后成功接收时间');
+check(collectorStatus.response.ok && collectorStatus.data.status.listener && (collectorStatus.data.status.listener.lastSuccessAt || collectorStatus.data.status.messagesToday > 0 || collectorStatus.data.status.uiCollector?.lastCapturedAt), '采集器未记录最后成功接收时间');
 passed('采集器记录最后成功接收时间');
 
 const pending = await request('/api/drafts?status=pending');

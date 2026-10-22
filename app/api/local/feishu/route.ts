@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { jsonError } from '@/app/api/_auth';
-import { getCollectorBinding, processInboundMessage, recordCollectorCandidate, recordCollectorConnection, recordCollectorFailure, recordCollectorSuccess } from '@/db/repository';
+import { getCollectorBinding, processInboundMessage, recordCollectorCandidate, recordCollectorConnection, recordCollectorFailure, recordCollectorSuccess, recordCollectorRawEvent, recordCollectorBridgeStatus } from '@/db/repository';
 
 /** Local-only bridge used by the Windows launcher. It is not a public Feishu webhook. */
 export async function POST(request: Request) {
@@ -20,12 +20,12 @@ export async function POST(request: Request) {
     const binding = await recordCollectorCandidate(chatId, typeof body.chatName === 'string' ? body.chatName : '', messageId, typeof body.eventTimestamp === 'number' ? body.eventTimestamp : Date.now());
     return Response.json({ ok: true, binding });
   }
-  if (body.type !== 'message') return Response.json({ ok: true, ignored: 'unsupported_local_event' });
+  if (body.type !== 'message') { await recordCollectorBridgeStatus(200); console.log('[feishu-bridge] ignored event HTTP 200 type=' + String(body.type)); return Response.json({ ok: true, bridgeStatus: 200, ignored: 'unsupported_local_event' }); }
   const eventId = typeof body.eventId === 'string' ? body.eventId : '';
   const messageId = typeof body.messageId === 'string' ? body.messageId : '';
   const chatId = typeof body.chatId === 'string' ? body.chatId : '';
   const text = typeof body.text === 'string' ? body.text : '';
-  if (!eventId || !messageId || !chatId || !text) return jsonError('本地飞书消息缺少必要字段', 400, 'LOCAL_MESSAGE_INVALID');
+  if (!eventId || !messageId || !chatId || !text) { await recordCollectorBridgeStatus(400, 'LOCAL_MESSAGE_INVALID'); console.log('[feishu-bridge] message HTTP 400 code=LOCAL_MESSAGE_INVALID'); return jsonError('本地飞书消息缺少必要字段', 400, 'LOCAL_MESSAGE_INVALID'); }
   try {
     const result = await processInboundMessage({
       eventId, messageId, chatId, text,

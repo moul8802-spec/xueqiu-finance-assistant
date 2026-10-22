@@ -49,7 +49,11 @@ function extractText(value) {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) return value.map(extractText).filter(Boolean).join(' ');
   if (!value || typeof value !== 'object') return '';
-  return Object.entries(value).filter(([key]) => !['href', 'url', 'images', 'img_key'].includes(key)).map(([, item]) => extractText(item)).filter(Boolean).join(' ');
+  const record = value;
+  const preferred = ['text', 'content', 'markdown', 'plain_text', 'title', 'description', 'value', 'label', 'elements', 'body', 'header', 'fields', 'i18n'];
+  const keys = preferred.filter((key) => key in record);
+  const source = keys.length ? keys.map((key) => [key, record[key]]) : Object.entries(record);
+  return source.filter(([key]) => !['href', 'url', 'images', 'img_key', 'tag', 'type', 'schema', 'template', 'template_id', 'language', 'style', 'margin', 'width', 'height'].includes(key)).map(([, item]) => extractText(item)).filter(Boolean).join(' ');
 }
 
 function extractUrl(value) {
@@ -60,11 +64,86 @@ function extractUrl(value) {
   return undefined;
 }
 
-function parseMessage(message) {
+function parseContent(type, rawContent) {
+  let content = rawContent;
+  if (typeof content === 'string') { try { content = JSON.parse(content); } catch { return { text: '', sourceUrl: undefined }; } }
+  return { text: extractText(content).replace(/\s+/gu, ' ').trim(), sourceUrl: extractUrl(content), type };
+}
+
+function timestamp(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function sourceName(item) {
+  return String(item?.sender?.name || item?.sender?.display_name || item?.sender?.id || item?.sender?.open_id || '').trim() || '原消息来源（飞书未提供名称）';
+}
+
+function sourceRecord(item) {
+  const type = String(item?.msg_type || item?.message_type || 'text');
+  const parsed = parseContent(type, item?.body?.content ?? item?.content);
+  return {
+    ...parsed,
+    messageId: String(item?.message_id || ''),
+    chatId: String(item?.chat_id || ''),
+    name: sourceName(item),
+    senderName: String(item?.sender?.name || item?.sender?.display_name || '').trim(),
+    time: timestamp(item?.create_time),
+  };
+}
+
+async function fetchForwardedItems(messageId) {
+  if (!messageId) return [];
+  try {
+    const response = await apiClient.im.v1.message.get({ path: { message_id: messageId }, params: { card_msg_content_type: 'user_card_content' } });
+    return Array.isArray(response?.data?.items) ? response.data.items : [];
+  } catch (error) {
+    console.error(`飞书转发消息展开失败：${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+}
+
+function combineForwardedRecords(records, fallback) {
+  const usable = records.filter((item) => item.text);
+  if (!usable.length) return fallback;
+  const body = usable.map((item, index) => `${usable.length > 1 ? `【转发消息 ${index + 1}】\n` : ''}${item.text}`).join('\n\n');
+  const sources = Array.from(new Map(usable.map((item) => [item.messageId || `${item.name}-${item.time}`, item])).values());
+  const sourceText = sources.map((item) => `来源群：${item.chatName || item.name}${item.senderName ? `｜发送者：${item.senderName}` : ''}${item.time ? `｜时间：${new Date(item.time).toLocaleString('zh-CN', { hour12: false })}` : ''}${item.messageId ? `｜消息ID：${item.messageId}` : ''}`).join('\n');
+  return {
+    text: `${body}\n\n【转发来源】\n${sourceText}`.trim(),
+    sourceUrl: usable.map((item) => item.sourceUrl).find(Boolean),
+    type: fallback.type,
+    forwardedFromName: sources.map((item) => item.chatName || item.name).join('、'),
+    forwardedFromTime: sources.map((item) => item.time).filter(Boolean).sort((a, b) => a - b)[0],
+    forwardedFromMessageId: sources.map((item) => item.messageId).filter(Boolean).join(','),
+    forwardedSourceChatId: sources.map((item) => item.chatId).find(Boolean),
+    forwardedMessageCount: sources.length,
+  };
+}
+
+async function parseMessage(message) {
   const type = String(message?.message_type || message?.msg_type || 'text');
-  let content = message?.content;
-  if (typeof content === 'string') { try { content = JSON.parse(content); } catch { return { text: '' }; } }
-  return { text: extractText(content).trim(), sourceUrl: extractUrl(content), type };
+  const parsed = parseContent(type, message?.content);
+  if (!['forward', 'merge_forward'].includes(type)) return parsed;
+
+  // A single forward carries the original message_id in content. A merge-forward
+  // is expanded by querying the received wrapper message; the official API
+  // returns the wrapper followed by its child messages in data.items[].
+  let referencedIds = [];
+  try {
+    const raw = typeof message?.content === 'string' ? JSON.parse(message.content) : message?.content;
+    referencedIds = [raw?.message_id, raw?.messageId, raw?.id].filter((value) => typeof value === 'string' && value.trim());
+  } catch { /* keep empty; the API lookup below may still expand merge_forward */ }
+  const items = type === 'merge_forward'
+    ? await fetchForwardedItems(String(message?.message_id || ''))
+    : (referencedIds.length ? await fetchForwardedItems(referencedIds[0]) : []);
+  const records = items
+    .filter((item) => String(item?.message_id || '') !== String(message?.message_id || '') || type !== 'merge_forward')
+    .map(sourceRecord);
+  await Promise.all(records.map(async (record) => {
+    if (record.chatId) record.chatName = await resolveChatName(record.chatId, {});
+  }));
+  return combineForwardedRecords(records, parsed);
 }
 
 async function resolveChatName(chatId, event) {
@@ -100,7 +179,7 @@ async function onMessage(data) {
     });
     return;
   }
-  const parsed = parseMessage(message);
+  const parsed = await parseMessage(message);
   if (!parsed.text) return;
   const sender = event?.sender?.sender_id || event?.sender || {};
   const timestamp = Number(message.create_time || event?.create_time || Date.now());
@@ -108,6 +187,12 @@ async function onMessage(data) {
     type: 'message', eventId: String(data?.header?.event_id || data?.event_id || message.message_id),
     messageId: String(message.message_id || ''), chatId, chatName, text: parsed.text,
     sourceUrl: parsed.sourceUrl, senderId: String(sender.open_id || sender.user_id || sender.union_id || ''),
+    senderName: String(sender.name || sender.display_name || ''),
+    forwardedFromName: parsed.forwardedFromName,
+    forwardedFromTime: parsed.forwardedFromTime,
+    forwardedFromMessageId: parsed.forwardedFromMessageId,
+    forwardedSourceChatId: parsed.forwardedSourceChatId,
+    forwardedMessageCount: parsed.forwardedMessageCount,
     eventTimestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
   });
 }

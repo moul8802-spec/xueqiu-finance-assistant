@@ -110,7 +110,7 @@ export async function ensureDatabase() {
     db.prepare("CREATE TABLE IF NOT EXISTS device_pairings (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, label TEXT NOT NULL, platform TEXT NOT NULL, token_hash TEXT NOT NULL, token_hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER, expires_at INTEGER)"),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_device_pairings_token_hash ON device_pairings(token_hash)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_device_pairings_actor ON device_pairings(actor_id, created_at)'),
-    db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, connection_state TEXT NOT NULL DEFAULT 'disabled', binding_status TEXT NOT NULL DEFAULT 'unbound', bound_chat_id TEXT, bound_chat_name TEXT, pending_chat_id TEXT, pending_chat_name TEXT, pending_message_id TEXT, pending_received_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, updated_at INTEGER NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, connection_state TEXT NOT NULL DEFAULT 'disabled', binding_status TEXT NOT NULL DEFAULT 'unbound', bound_chat_id TEXT, bound_chat_name TEXT, pending_chat_id TEXT, pending_chat_name TEXT, pending_message_id TEXT, pending_received_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, last_raw_event_at INTEGER, last_bridge_status INTEGER, updated_at INTEGER NOT NULL)"),
   ]);
   for (const statement of [
     "ALTER TABLE messages ADD COLUMN sender_name TEXT",
@@ -132,6 +132,8 @@ export async function ensureDatabase() {
     "ALTER TABLE collector_state ADD COLUMN pending_chat_name TEXT",
     "ALTER TABLE collector_state ADD COLUMN pending_message_id TEXT",
     "ALTER TABLE collector_state ADD COLUMN pending_received_at INTEGER",
+    "ALTER TABLE collector_state ADD COLUMN last_raw_event_at INTEGER",
+    "ALTER TABLE collector_state ADD COLUMN last_bridge_status INTEGER",
   ]) {
     try { await db.prepare(statement).run(); } catch { /* column already exists */ }
   }
@@ -665,6 +667,9 @@ export async function getSystemStatus() {
       lastReceivedAt: collector?.last_received_at == null ? null : Number(collector.last_received_at),
       lastSuccessAt: collector?.last_success_at == null ? null : Number(collector.last_success_at),
       lastError: collector?.last_error ? String(collector.last_error) : null,
+      lastRawEventAt: collector?.last_raw_event_at == null ? null : Number(collector.last_raw_event_at),
+      lastEventId: collector?.last_event_id ? String(collector.last_event_id) : null,
+      lastBridgeStatus: collector?.last_bridge_status == null ? null : Number(collector.last_bridge_status),
       consecutiveFailures: Number(collector?.consecutive_failures ?? 0),
     },
     binding,
@@ -742,6 +747,23 @@ export async function unbindCollectorChat(actor: string) {
     env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind('collector_chat_unbound', actor, 'chat', 'feishu', '{}', now),
   ]);
   return getCollectorBinding();
+}
+
+
+export async function recordCollectorRawEvent(eventId: string, receivedAt = Date.now()) {
+  await ensureDatabase();
+  await env.DB.prepare(`INSERT INTO collector_state (id, last_received_at, last_event_id, last_raw_event_at, updated_at)
+    VALUES ('feishu', ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_received_at=excluded.last_received_at,
+    last_event_id=excluded.last_event_id, last_raw_event_at=excluded.last_raw_event_at, updated_at=excluded.updated_at`)
+    .bind(receivedAt, eventId || null, receivedAt, Date.now()).run();
+}
+
+export async function recordCollectorBridgeStatus(status: number, errorMessage?: string) {
+  await ensureDatabase();
+  await env.DB.prepare(`INSERT INTO collector_state (id, last_bridge_status, last_error, updated_at)
+    VALUES ('feishu', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_bridge_status=excluded.last_bridge_status,
+    last_error=CASE WHEN excluded.last_bridge_status >= 200 AND excluded.last_bridge_status < 300 THEN NULL ELSE excluded.last_error END,
+    updated_at=excluded.updated_at`).bind(status, errorMessage ? errorMessage.slice(0, 500) : null, Date.now()).run();
 }
 
 export async function recordCollectorSuccess(eventId: string, receivedAt = Date.now()) {

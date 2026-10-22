@@ -179,14 +179,14 @@ class FeishuUiCollector:
             return
         if not self.baselined:
             for message in messages:
-                fingerprint = hashlib.sha256((group_name + "\n" + message["sender"] + "\n" + str(message["messageTime"]) + "\n" + message["text"]).encode("utf-8")).hexdigest()
+                fingerprint = hashlib.sha256((group_name + "\n" + message["sender"] + "\n" + message["text"]).encode("utf-8")).hexdigest()
                 self.seen.setdefault(fingerprint, int(time.time() * 1000))
             self._save_seen()
             self.baselined = True
             self._log(f"UIA 基线建立 chat={group_name or '未命名'} visible={len(messages)}")
             return
         for message in messages:
-            fingerprint = hashlib.sha256((group_name + "\n" + message["sender"] + "\n" + str(message["messageTime"]) + "\n" + message["text"]).encode("utf-8")).hexdigest()
+            fingerprint = hashlib.sha256((group_name + "\n" + message["sender"] + "\n" + message["text"]).encode("utf-8")).hexdigest()
             if fingerprint in self.seen:
                 continue
             self.seen[fingerprint] = int(time.time() * 1000)

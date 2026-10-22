@@ -23,7 +23,7 @@ type SystemStatus = {
   mode: string; configured: boolean; allowedChats: number; pending: number;
   duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; connectionState?: string; lastReceivedAt: number | null; lastSuccessAt: number | null; lastRawEventAt?: number | null; lastEventId?: string | null; lastBridgeStatus?: number | null; lastError: string | null; consecutiveFailures: number };
   binding?: { status: 'unbound' | 'pending' | 'bound'; boundChatId: string | null; boundChatName: string | null; pendingChatId: string | null; pendingChatName: string | null; pendingMessageId: string | null; pendingReceivedAt: number | null };
-  uiCollector?: { state: string; pid: number | null; windowTitle: string; currentChat: string; messageCount: number; lastSummary: string; lastError: string; monitoring: boolean; lastCapturedAt: number | null; updatedAt: number };
+  uiCollector?: { state: string; pid: number | null; windowTitle: string; currentChat: string; messageCount: number; lastSummary: string; lastError: string; monitoring: boolean; mode: 'silent' | 'auto'; autoRunning: boolean; maxMessages: number; whitelist: string[]; discoveredGroups: Array<{ name: string; unreadCount: number; lastTime: string }>; currentScanning: string; nextGroup: string; cycle: { scanned: number; captured: number; duplicates: number; valid: number; startedAt: number | null }; skipRequested: number; lastCapturedAt: number | null; updatedAt: number };
 };
 
 type InboundMessage = { id: string; messageId: string; senderName: string | null; source: string; originalText: string | null; sanitizedText: string; sourceUrl: string | null; status: string; receivedAt: number; };
@@ -147,6 +147,23 @@ export function ReviewDashboard() {
     await loadData();
   }
 
+  async function setUiControl(body: Record<string, unknown>, noticeText?: string) {
+    const response = await fetch('/api/local/ui', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'control', ...body }),
+    });
+    if (!response.ok) { setNotice('飞书采集控制失败，请重试'); return; }
+    if (noticeText) setNotice(noticeText);
+    await loadData();
+  }
+
+  async function chooseUiMode(mode: 'silent' | 'auto') {
+    await setUiControl({ mode, action: mode === 'silent' ? 'start' : 'config' }, mode === 'auto' ? '已切换到自动巡检模式' : '已切换到静默监听模式');
+  }
+
+  async function saveUiWhitelist(names: string[]) {
+    await setUiControl({ action: 'config', mode: 'auto', whitelist: names }, '群采集白名单已保存');
+  }
+
 
   function switchView(next: QueueView) {
     setView(next);
@@ -212,14 +229,44 @@ export function ReviewDashboard() {
         <section className="min-w-0">
           <section className="mb-5 rounded-2xl border border-[#3370ff]/20 bg-[#3370ff]/[0.04] p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div><p className="text-sm font-semibold">飞书客户端本地采集</p><p className="mt-1 text-xs text-muted-foreground">只读取当前登录账号在飞书窗口中已经可见的文本，不操作鼠标键盘，不读取缓存或接口。</p></div>
-              <Button size="sm" variant={status?.uiCollector?.monitoring ? 'outline' : 'default'} onClick={() => void toggleUiMonitoring()}>{status?.uiCollector?.monitoring ? '暂停监控' : '开始监控'}</Button>
+              <div><p className="text-sm font-semibold">飞书客户端本地采集</p><p className="mt-1 text-xs text-muted-foreground">静默监听只读当前群；自动巡检会逐个点击有未读的白名单群，仅读取可见 UI 文本，不读取缓存或接口。</p></div>
+              <div className="flex gap-2">
+                <Button size="sm" variant={status?.uiCollector?.mode !== 'auto' ? 'default' : 'outline'} onClick={() => void chooseUiMode('silent')}>静默监听</Button>
+                <Button size="sm" variant={status?.uiCollector?.mode === 'auto' ? 'default' : 'outline'} onClick={() => void chooseUiMode('auto')}>自动巡检未读群</Button>
+              </div>
             </div>
+            {status?.uiCollector?.mode === 'auto' && <div className="mt-4 space-y-3 rounded-xl border border-border bg-card p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={() => void setUiControl({ action: 'start_auto', mode: 'auto' }, '自动巡检已开始')}>开始巡检</Button>
+                <Button size="sm" variant="outline" onClick={() => void setUiControl({ action: 'pause_auto', mode: 'auto' }, '自动巡检已暂停')}>暂停</Button>
+                <Button size="sm" variant="outline" onClick={() => void setUiControl({ action: 'stop_auto', mode: 'auto' }, '自动巡检已停止')}>停止</Button>
+                <Button size="sm" variant="outline" onClick={() => void setUiControl({ action: 'skip', mode: 'auto' }, '已请求跳过当前群')}>跳过当前群</Button>
+                <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">单群上限
+                  <select className="rounded-md border border-border bg-background px-2 py-1" value={status.uiCollector.maxMessages} onChange={(event) => void setUiControl({ action: 'config', mode: 'auto', maxMessages: Number(event.target.value) })}>
+                    {[50, 100, 200].map((value) => <option key={value} value={value}>{value} 条</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                <span>发现未读群：{status.uiCollector.discoveredGroups.length} 个</span><span>当前扫描：{status.uiCollector.currentScanning || '—'}</span>
+                <span>本轮已扫描：{status.uiCollector.cycle.scanned} 个群</span><span>本轮采集：{status.uiCollector.cycle.captured} 条</span>
+                <span>本轮去重：{status.uiCollector.cycle.duplicates} 条</span><span>本轮有效财经消息：{status.uiCollector.cycle.valid} 条</span>
+                <span>下一群：{status.uiCollector.nextGroup || '—'}</span><span>状态：{status.uiCollector.autoRunning ? '巡检中' : '已停止/暂停'}</span>
+              </div>
+              <div className="border-t border-border pt-3">
+                <p className="mb-2 text-xs font-medium">群采集白名单（不勾选则不自动采集）</p>
+                <div className="grid max-h-44 gap-2 overflow-auto sm:grid-cols-2">
+                  {status.uiCollector.discoveredGroups.map((group) => <label key={group.name} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={status.uiCollector?.whitelist.includes(group.name) ?? false} onChange={(event) => { const current = status.uiCollector?.whitelist ?? []; const next = event.target.checked ? [...new Set([...current, group.name])] : current.filter((name) => name !== group.name); void saveUiWhitelist(next); }} /><span className="truncate">{group.name} · 未读 {group.unreadCount}</span></label>)}
+                  {!status.uiCollector.discoveredGroups.length && <span className="text-xs text-muted-foreground">尚未发现带未读数的群，请保持飞书群组列表可见。</span>}
+                </div>
+              </div>
+            </div>}
             <details className="mt-3 rounded-xl border border-border bg-card p-3 text-xs">
               <summary className="cursor-pointer font-medium">飞书采集诊断</summary>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 text-muted-foreground">
                 <span>进程 PID：{status?.uiCollector?.pid ?? '未找到'}</span><span>窗口：{status?.uiCollector?.windowTitle || '未找到'}</span>
                 <span>消息列表：{status?.uiCollector?.messageCount ?? 0} 条可见消息</span><span>当前群：{status?.uiCollector?.currentChat || '未识别'}</span>
+                <span>模式：{status?.uiCollector?.mode === 'auto' ? '自动巡检' : '静默监听'}</span><span>监听状态：{status?.uiCollector?.monitoring ? '运行中' : '已暂停'}</span>
                 <span className="sm:col-span-2">最近摘要：{status?.uiCollector?.lastSummary || '暂无'}</span>
                 <span className="sm:col-span-2 text-amber-700">错误：{status?.uiCollector?.lastError || '无'}</span>
               </div>
@@ -324,4 +371,5 @@ function CollectorBindingPanel({ binding, onAction, onUnbind }: { binding?: Syst
     {binding.status === 'unbound' && <p className="mt-3 text-sm text-muted-foreground">等待首次绑定：请让机器人在目标群收到一条消息，页面会显示群名和群 ID，再由你确认绑定。</p>}
   </section>;
 }
+
 

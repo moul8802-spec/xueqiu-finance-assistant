@@ -32,6 +32,7 @@ type QueueView = 'new' | 'pending' | 'copied' | 'published' | 'skipped' | 'logs'
 const VIEW_LABELS: Record<QueueView, string> = {
   new: '新消息', pending: '待审核', copied: '待发布', published: '已发布', skipped: '已忽略', logs: '运行日志',
 };
+const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID || 'dev-local';
 
 export function ReviewDashboard() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -248,6 +249,7 @@ export function ReviewDashboard() {
             {status?.mode === 'simulation' && <Button className="mt-5" onClick={() => void createDemoDraft()}><Sparkles />生成演示草稿</Button>}
           </div>}
           <p className="mt-4 text-center text-xs leading-5 text-muted-foreground">助手只生成草稿，不会代替你发布或保存雪球账号凭证</p>
+          <p className="mt-2 text-right text-[10px] tabular-nums text-muted-foreground/70" data-testid="build-version">构建版本：{BUILD_ID}</p>
         </section>
       </div>
 

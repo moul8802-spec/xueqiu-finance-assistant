@@ -60,7 +60,8 @@ jobs:
             --add-data ".dev.vars.example;." `
             --add-data "README.md;." `
             --add-data "build-info.json;." `
-            --add-data "feishu-ws.mjs;." `
+            --add-data "feishu-ws.mjs;." ` `
+            --hidden-import "pywinauto" `
             launcher.py
 
       - name: Start EXE and run end-to-end tests

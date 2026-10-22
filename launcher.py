@@ -169,12 +169,16 @@ def main() -> int:
     ws_env = env.copy()
     ws_env.update(local_vars)
     ws_env.update({"FEISHU_WS_BRIDGE_URL": f"http://127.0.0.1:{port}/api/local/feishu", "FEISHU_WS_BRIDGE_TOKEN": bridge_token})
-    ws = subprocess.Popen([str(node), str(ws_script)], cwd=str(root), env=ws_env, stdout=ws_log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if ws_enabled else None
+    ws = None
     atexit.register(lambda: server.poll() is None and server.terminate())
-    if ws is not None:
-        atexit.register(lambda: ws.poll() is None and ws.terminate())
     try:
         wait_for_http(port, log_file, server, server_log)
+        # Start the Feishu client only after the local bridge is serving.  This
+        # avoids losing the initial connection-state POST during Wrangler's
+        # startup race, which otherwise leaves the UI stuck at "启动中".
+        if ws_enabled:
+            ws = subprocess.Popen([str(node), str(ws_script)], cwd=str(root), env=ws_env, stdout=ws_log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            atexit.register(lambda: ws is not None and ws.poll() is None and ws.terminate())
         url = f"http://127.0.0.1:{port}/"
         log_line(log_file, f"请在浏览器打开：{url}")
         if os.environ.get("XUEQIU_NO_BROWSER") != "1":

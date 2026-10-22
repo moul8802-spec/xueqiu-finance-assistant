@@ -22,6 +22,8 @@
 5. AI 整理优先使用 `AI_PROVIDER=deepseek`、`AI_API_KEY`、`AI_MODEL=deepseek-chat`、`AI_BASE_URL=https://api.deepseek.com`；也兼容 OpenAI 变量。缺失时页面明确显示规则模式。
 6. Windows 首次启动会在 `%LOCALAPPDATA%\\雪球财经助手\\.dev.vars` 创建本机配置模板。只需填写 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`；`FEISHU_ALLOWED_CHAT_IDS` 可保持为空。长连接启动后，机器人收到第一条群消息，审核页会显示群名、群 ID 和“绑定为财经采集群”按钮，确认后自动保存绑定，不需要手动寻找群 ID。App Secret 只保存在本机配置，不会显示在页面或日志。无需公网回调 URL、Sites 或 `FEISHU_VERIFICATION_TOKEN`。
 
+绑定后的“财经采集站”支持普通文本、富文本、卡片（`interactive`）、单条转发（`forward`）和合并转发（`merge_forward`）。对转发消息，Windows 长连接会按消息 ID调用飞书官方“获取指定消息内容”接口展开原消息；合并转发会读取 `data.items` 中的子消息，提取正文、来源群（能取得时）、来源发送者（能取得时）、原消息时间和原消息 ID，再送入同一套去重、脱敏、分类和草稿流程。若飞书未返回来源名称，页面会保留可核验的来源 ID，不会把占位文本伪装成原文。
+
 页面中的“测试应用令牌”只在服务端验证 App ID / App Secret 能否取得应用身份令牌，返回值仅包含 HTTP 状态、飞书错误码、错误原因和 `ttLogId`，不会返回或记录令牌。应用令牌通过后，可再使用最小权限 OAuth（仅 `offline_access`）区分应用配置问题与用户账号安全策略拒绝。
 
 飞书不同租户的数据相互隔离。页面会标记外部群，但最终是否能读取，仍由飞书应用类型、对外共享能力、机器人是否在群内、群的复制/保密设置以及当前用户权限决定。接口失败时页面原样展示飞书错误码与原因，不会替换成模拟数据。

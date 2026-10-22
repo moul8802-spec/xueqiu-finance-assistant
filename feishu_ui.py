@@ -93,6 +93,14 @@ class FeishuUiCollector:
         except Exception:
             return ""
 
+    @staticmethod
+    def _process_id(element: Any) -> int | None:
+        try:
+            value = element.process_id()
+            return int(value) if value else None
+        except Exception:
+            return None
+
     def _find_chat_root(self, window: Any) -> Any:
         try:
             for element in window.descendants():
@@ -181,7 +189,7 @@ class FeishuUiCollector:
         summary = messages[-1]["text"][:100] if messages else ""
         self._post({
             "type": "diagnostic", "state": "monitoring" if self.monitoring else "paused",
-            "pid": self._info(window, "process_id"), "windowTitle": title,
+            "pid": self._process_id(window), "windowTitle": title,
             "currentChat": group_name, "messageCount": len(messages),
             "lastSummary": summary, "error": "",
         })

@@ -110,7 +110,7 @@ export async function ensureDatabase() {
     db.prepare("CREATE TABLE IF NOT EXISTS device_pairings (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, label TEXT NOT NULL, platform TEXT NOT NULL, token_hash TEXT NOT NULL, token_hint TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER, expires_at INTEGER)"),
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_device_pairings_token_hash ON device_pairings(token_hash)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_device_pairings_actor ON device_pairings(actor_id, created_at)'),
-    db.prepare("CREATE TABLE IF NOT EXISTS ui_collector_state (id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'starting', pid INTEGER, window_title TEXT NOT NULL DEFAULT '', current_chat TEXT NOT NULL DEFAULT '', message_count INTEGER NOT NULL DEFAULT 0, last_summary TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', monitoring INTEGER NOT NULL DEFAULT 1, last_captured_at INTEGER, updated_at INTEGER NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS ui_collector_state (id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'starting', pid INTEGER, window_title TEXT NOT NULL DEFAULT '', current_chat TEXT NOT NULL DEFAULT '', message_count INTEGER NOT NULL DEFAULT 0, last_summary TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', monitoring INTEGER NOT NULL DEFAULT 1, mode TEXT NOT NULL DEFAULT 'silent', auto_running INTEGER NOT NULL DEFAULT 0, max_messages INTEGER NOT NULL DEFAULT 100, whitelist_json TEXT NOT NULL DEFAULT '[]', discovered_groups_json TEXT NOT NULL DEFAULT '[]', current_scanning TEXT NOT NULL DEFAULT '', next_group TEXT NOT NULL DEFAULT '', cycle_json TEXT NOT NULL DEFAULT '{}', skip_requested INTEGER NOT NULL DEFAULT 0, last_captured_at INTEGER, updated_at INTEGER NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS collector_state (id TEXT PRIMARY KEY, last_received_at INTEGER, last_success_at INTEGER, last_error TEXT, connection_state TEXT NOT NULL DEFAULT 'disabled', binding_status TEXT NOT NULL DEFAULT 'unbound', bound_chat_id TEXT, bound_chat_name TEXT, pending_chat_id TEXT, pending_chat_name TEXT, pending_message_id TEXT, pending_received_at INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_event_id TEXT, last_raw_event_at INTEGER, last_bridge_status INTEGER, updated_at INTEGER NOT NULL)"),
   ]);
   for (const statement of [
@@ -122,6 +122,19 @@ export async function ensureDatabase() {
     "ALTER TABLE messages ADD COLUMN processed_at INTEGER",
   ]) {
     try { await db.prepare(statement).run(); } catch { /* column already exists */ }
+  }
+  for (const statement of [
+    "ALTER TABLE ui_collector_state ADD COLUMN mode TEXT NOT NULL DEFAULT 'silent'",
+    "ALTER TABLE ui_collector_state ADD COLUMN auto_running INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE ui_collector_state ADD COLUMN max_messages INTEGER NOT NULL DEFAULT 100",
+    "ALTER TABLE ui_collector_state ADD COLUMN whitelist_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE ui_collector_state ADD COLUMN discovered_groups_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE ui_collector_state ADD COLUMN current_scanning TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ui_collector_state ADD COLUMN next_group TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ui_collector_state ADD COLUMN cycle_json TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE ui_collector_state ADD COLUMN skip_requested INTEGER NOT NULL DEFAULT 0",
+  ]) {
+    try { await db.prepare(statement).run(); } catch { /* already present */ }
   }
   try { await db.prepare("ALTER TABLE drafts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'").run(); } catch { /* already present */ }
   try { await db.prepare("ALTER TABLE collector_state ADD COLUMN connection_state TEXT NOT NULL DEFAULT 'disabled'").run(); } catch { /* already present */ }
@@ -655,11 +668,21 @@ export type UiCollectorStatus = {
   lastSummary: string;
   lastError: string;
   monitoring: boolean;
+  mode: 'silent' | 'auto';
+  autoRunning: boolean;
+  maxMessages: number;
+  whitelist: string[];
+  discoveredGroups: Array<{ name: string; unreadCount: number; lastTime: string }>;
+  currentScanning: string;
+  nextGroup: string;
+  cycle: { scanned: number; captured: number; duplicates: number; valid: number; startedAt: number | null };
+  skipRequested: number;
   lastCapturedAt: number | null;
   updatedAt: number;
 };
 
 function uiCollectorFromRow(row: Record<string, unknown> | null | undefined): UiCollectorStatus {
+  const mode = row?.mode === 'auto' ? 'auto' : 'silent';
   return {
     state: row?.state ? String(row.state) : 'starting',
     pid: row?.pid == null ? null : Number(row.pid),
@@ -669,6 +692,19 @@ function uiCollectorFromRow(row: Record<string, unknown> | null | undefined): Ui
     lastSummary: row?.last_summary ? String(row.last_summary) : '',
     lastError: row?.last_error ? String(row.last_error) : '',
     monitoring: Number(row?.monitoring ?? 1) === 1,
+    mode,
+    autoRunning: Number(row?.auto_running ?? 0) === 1,
+    maxMessages: Math.max(1, Math.min(200, Number(row?.max_messages ?? 100))),
+    whitelist: safeJsonArray(row?.whitelist_json),
+    discoveredGroups: (() => {
+      try { const value = JSON.parse(String(row?.discovered_groups_json ?? '[]')); return Array.isArray(value) ? value as Array<{ name: string; unreadCount: number; lastTime: string }> : []; } catch { return []; }
+    })(),
+    currentScanning: row?.current_scanning ? String(row.current_scanning) : '',
+    nextGroup: row?.next_group ? String(row.next_group) : '',
+    cycle: (() => {
+      try { const value = JSON.parse(String(row?.cycle_json ?? '{}')); return { scanned: Number(value.scanned ?? 0), captured: Number(value.captured ?? 0), duplicates: Number(value.duplicates ?? 0), valid: Number(value.valid ?? 0), startedAt: value.startedAt == null ? null : Number(value.startedAt) }; } catch { return { scanned: 0, captured: 0, duplicates: 0, valid: 0, startedAt: null }; }
+    })(),
+    skipRequested: Number(row?.skip_requested ?? 0),
     lastCapturedAt: row?.last_captured_at == null ? null : Number(row.last_captured_at),
     updatedAt: Number(row?.updated_at ?? Date.now()),
   };
@@ -684,15 +720,24 @@ export async function recordUiCollectorStatus(input: Partial<UiCollectorStatus>)
   await ensureDatabase();
   const current = uiCollectorFromRow(await env.DB.prepare('SELECT * FROM ui_collector_state WHERE id = ?').bind('feishu-ui').first<Record<string, unknown>>());
   const next = { ...current, ...input, updatedAt: Date.now() };
-  await env.DB.prepare(`INSERT INTO ui_collector_state (id, state, pid, window_title, current_chat, message_count, last_summary, last_error, monitoring, last_captured_at, updated_at)
-    VALUES ('feishu-ui', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET state=excluded.state, pid=excluded.pid, window_title=excluded.window_title, current_chat=excluded.current_chat, message_count=excluded.message_count, last_summary=excluded.last_summary, last_error=excluded.last_error, monitoring=excluded.monitoring, last_captured_at=excluded.last_captured_at, updated_at=excluded.updated_at`)
-    .bind(next.state, next.pid, next.windowTitle, next.currentChat, next.messageCount, next.lastSummary, next.lastError, next.monitoring ? 1 : 0, next.lastCapturedAt, next.updatedAt).run();
+  await env.DB.prepare(`INSERT INTO ui_collector_state (id, state, pid, window_title, current_chat, message_count, last_summary, last_error, monitoring, mode, auto_running, max_messages, whitelist_json, discovered_groups_json, current_scanning, next_group, cycle_json, skip_requested, last_captured_at, updated_at)
+    VALUES ('feishu-ui', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET state=excluded.state, pid=excluded.pid, window_title=excluded.window_title, current_chat=excluded.current_chat, message_count=excluded.message_count, last_summary=excluded.last_summary, last_error=excluded.last_error, monitoring=excluded.monitoring, mode=excluded.mode, auto_running=excluded.auto_running, max_messages=excluded.max_messages, whitelist_json=excluded.whitelist_json, discovered_groups_json=excluded.discovered_groups_json, current_scanning=excluded.current_scanning, next_group=excluded.next_group, cycle_json=excluded.cycle_json, skip_requested=excluded.skip_requested, last_captured_at=excluded.last_captured_at, updated_at=excluded.updated_at`)
+    .bind(next.state, next.pid, next.windowTitle, next.currentChat, next.messageCount, next.lastSummary, next.lastError, next.monitoring ? 1 : 0, next.mode, next.autoRunning ? 1 : 0, next.maxMessages, JSON.stringify(next.whitelist), JSON.stringify(next.discoveredGroups), next.currentScanning, next.nextGroup, JSON.stringify(next.cycle), next.skipRequested, next.lastCapturedAt, next.updatedAt).run();
   return next;
 }
 
 export async function setUiCollectorMonitoring(monitoring: boolean): Promise<UiCollectorStatus> {
   return recordUiCollectorStatus({ monitoring, state: monitoring ? 'monitoring' : 'paused' });
+}
+
+export async function setUiCollectorControl(input: Partial<UiCollectorStatus> & { skip?: boolean }): Promise<UiCollectorStatus> {
+  await ensureDatabase();
+  const current = await getUiCollectorStatus();
+  const next = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as Partial<UiCollectorStatus>;
+  if (input.skip) next.skipRequested = current.skipRequested + 1;
+  delete (next as Record<string, unknown>).skip;
+  return recordUiCollectorStatus(next);
 }
 
 export async function getSystemStatus() {
@@ -956,4 +1001,5 @@ async function log(action: string, actor: string, entityType: string, entityId: 
   await env.DB.prepare('INSERT INTO audit_logs (action, actor, entity_type, entity_id, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(action, actor, entityType, entityId, JSON.stringify(details), Date.now()).run();
 }
+
 

@@ -96,7 +96,10 @@ class FeishuUiCollector:
     def _find_chat_root(self, window: Any) -> Any:
         try:
             for element in window.descendants():
-                if self._info(element, "automation_id") == "messenger-chat":
+                automation_id = self._info(element, "automation_id").lower()
+                name = self._text(element).lower()
+                control_type = self._info(element, "control_type").lower()
+                if "messenger-chat" in automation_id or ("messenger-chat" in name and control_type in {"document", "pane", "window"}):
                     return element
         except Exception:
             return None
@@ -110,7 +113,7 @@ class FeishuUiCollector:
                 if self._info(element, "control_type") != "Text":
                     continue
                 value = self._text(element)
-                if value and value not in values:
+                if value:
                     values.append(value)
         except Exception:
             return values
@@ -161,12 +164,19 @@ class FeishuUiCollector:
         window = windows[0]
         title = self._text(window) or "飞书"
         root = self._find_chat_root(window)
+        texts = self._visible_texts(root if root is not None else window)
         if root is None:
-            self._post({"type": "diagnostic", "state": "detected", "windowTitle": title, "error": "未找到 messenger-chat 可访问性节点"})
-            self._log("UIA 状态：找到飞书窗口，但未找到 messenger-chat 节点")
+            self._log("UIA 诊断：messenger-chat AutomationId 未暴露，使用飞书窗口可见文本树降级读取")
+        welcome_index = next((index for index, item in enumerate(texts) if item == "欢迎加入群组"), -1)
+        if welcome_index >= 0:
+            prefix = texts[max(0, welcome_index - 20):welcome_index]
+            group_name = next((item for item in prefix if item and len(item) <= 80 and not item.isdigit() and item not in {"消息", "群组", "单聊"}), "")
+            texts = texts[welcome_index + 1:]
+        else:
+            group_name = next((item for item in texts[:20] if item and len(item) <= 80), "")
+        if not group_name:
+            self._post({"type": "diagnostic", "state": "detected", "windowTitle": title, "error": "未识别当前聊天标题"})
             return
-        texts = self._visible_texts(root)
-        group_name = next((item for item in texts[:12] if item and len(item) <= 80), "")
         messages = self._parse_messages(group_name, texts)
         summary = messages[-1]["text"][:100] if messages else ""
         self._post({

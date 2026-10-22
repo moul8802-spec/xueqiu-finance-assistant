@@ -92,6 +92,95 @@ def wait_for_http(port: int, log_file: Path, process: subprocess.Popen, server_l
     raise RuntimeError(f"本地网页启动超时：{last_error}")
 
 
+def acquire_app_lock(data: Path, log_file: Path):
+    lock_path = data / "state" / "app.lock"
+    pid_path = data / "state" / "app.pid"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        handle = lock_path.open("x", encoding="ascii")
+    except FileExistsError:
+        owner_pid = 0
+        try:
+            owner_pid = int(lock_path.read_text(encoding="ascii", errors="ignore").strip())
+        except (OSError, ValueError):
+            pass
+        if owner_pid:
+            try:
+                os.kill(owner_pid, 0)
+            except OSError:
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                handle = lock_path.open("x", encoding="ascii")
+            else:
+                raise RuntimeError(f"雪球财经助手已有实例运行（pid={owner_pid}）")
+        else:
+            raise RuntimeError("雪球财经助手单实例锁已被占用")
+    handle.write(str(os.getpid()))
+    handle.flush()
+    pid_path.write_text(str(os.getpid()), encoding="ascii")
+
+    def release():
+        try:
+            handle.close()
+        except OSError:
+            pass
+        try:
+            if lock_path.exists() and lock_path.read_text(encoding="ascii", errors="ignore").strip() == str(os.getpid()):
+                lock_path.unlink()
+        except OSError:
+            pass
+        try:
+            if pid_path.exists() and pid_path.read_text(encoding="ascii", errors="ignore").strip() == str(os.getpid()):
+                pid_path.unlink()
+        except OSError:
+            pass
+
+    atexit.register(release)
+    log_line(log_file, f"单实例锁已取得 pid={os.getpid()}")
+    return release
+
+
+def cleanup_stale_ws(data: Path, log_file: Path) -> None:
+    pid_path = data / "state" / "feishu-ws.pid"
+    if not pid_path.exists():
+        return
+    try:
+        pid = int(pid_path.read_text(encoding="ascii", errors="ignore").strip())
+    except (OSError, ValueError):
+        pid = 0
+    if not pid:
+        try:
+            pid_path.unlink()
+        except OSError:
+            pass
+        return
+    command_line = ""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter \\"ProcessId = {pid}\\").CommandLine"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        command_line = result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        command_line = ""
+    if "feishu-ws.mjs" not in command_line or APP_NAME not in command_line:
+        log_line(log_file, f"保留非本程序 PID={pid}，未执行清理")
+        return
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, timeout=10, check=False)
+        log_line(log_file, f"已清理旧飞书 WS 子进程 pid={pid}")
+    except (OSError, subprocess.SubprocessError) as error:
+        log_line(log_file, f"清理旧飞书 WS 子进程失败：{error}")
+    try:
+        pid_path.unlink()
+    except OSError:
+        pass
+
+
+
 def main() -> int:
     global BUILD_ID, BUILD_TIME
     root = bundle_root()
@@ -109,6 +198,12 @@ def main() -> int:
     log_file = data / "logs" / "launcher.log"
     if not log_file.exists() or log_file.stat().st_size == 0:
         log_line(log_file, f"BUILD_ID={BUILD_ID} BUILD_TIME={BUILD_TIME}")
+    cleanup_stale_ws(data, log_file)
+    try:
+        acquire_app_lock(data, log_file)
+    except RuntimeError as error:
+        log_line(log_file, str(error))
+        return 3
     vars_file = data / ".dev.vars"
     if not vars_file.exists():
         vars_file.write_text(
@@ -168,7 +263,7 @@ def main() -> int:
     ws_log = (data / "logs" / "feishu-ws.log").open("a", encoding="utf-8")
     ws_env = env.copy()
     ws_env.update(local_vars)
-    ws_env.update({"FEISHU_WS_BRIDGE_URL": f"http://127.0.0.1:{port}/api/local/feishu", "FEISHU_WS_BRIDGE_TOKEN": bridge_token})
+    ws_env.update({"FEISHU_WS_BRIDGE_URL": f"http://127.0.0.1:{port}/api/local/feishu", "FEISHU_WS_BRIDGE_TOKEN": bridge_token, "FEISHU_WS_LOG_FILE": str(data / 'logs' / 'feishu-ws.log'), "FEISHU_WS_LOCK_FILE": str(data / 'state' / 'feishu-ws.lock'), "FEISHU_WS_PID_FILE": str(data / 'state' / 'feishu-ws.pid')})
     ws = None
     atexit.register(lambda: server.poll() is None and server.terminate())
     try:

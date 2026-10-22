@@ -23,6 +23,7 @@ type SystemStatus = {
   mode: string; configured: boolean; allowedChats: number; pending: number;
   duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; connectionState?: string; lastReceivedAt: number | null; lastSuccessAt: number | null; lastRawEventAt?: number | null; lastEventId?: string | null; lastBridgeStatus?: number | null; lastError: string | null; consecutiveFailures: number };
   binding?: { status: 'unbound' | 'pending' | 'bound'; boundChatId: string | null; boundChatName: string | null; pendingChatId: string | null; pendingChatName: string | null; pendingMessageId: string | null; pendingReceivedAt: number | null };
+  uiCollector?: { state: string; pid: number | null; windowTitle: string; currentChat: string; messageCount: number; lastSummary: string; lastError: string; monitoring: boolean; lastCapturedAt: number | null; updatedAt: number };
 };
 
 type InboundMessage = { id: string; messageId: string; senderName: string | null; source: string; originalText: string | null; sanitizedText: string; sourceUrl: string | null; status: string; receivedAt: number; };
@@ -135,6 +136,17 @@ export function ReviewDashboard() {
     setNotice('已解除绑定，等待下一条群消息');
     await loadData();
   }
+  async function toggleUiMonitoring() {
+    const action = status?.uiCollector?.monitoring ? 'pause' : 'start';
+    const response = await fetch('/api/local/ui', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'control', action }),
+    });
+    if (!response.ok) { setNotice('本地采集控制失败，请重试'); return; }
+    setNotice(action === 'pause' ? '已暂停飞书客户端监听' : '已开始飞书客户端监听');
+    await loadData();
+  }
+
 
   function switchView(next: QueueView) {
     setView(next);
@@ -161,7 +173,7 @@ export function ReviewDashboard() {
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
             <div className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Sparkles className="size-4" /></div>
-            <div><p className="text-[15px] font-semibold tracking-tight">雪球财经助手 v2.0</p><p className="text-[11px] text-muted-foreground">飞书采集群自动接收 · AI整理 · 人工审核</p></div>
+            <div><p className="text-[15px] font-semibold tracking-tight">雪球财经助手 v3.0</p><p className="text-[11px] text-muted-foreground">飞书客户端可见窗口采集 · AI整理 · 人工审核</p></div>
           </div>
           <Button variant="ghost" size="icon" aria-label="更多选项"><MoreHorizontal /></Button>
         </div>
@@ -187,19 +199,36 @@ export function ReviewDashboard() {
                 <StatusRow label="群白名单" value={`${status?.allowedChats ?? 0} 个`} />
                 <StatusRow label="今日去重" value={`${status?.duplicatesToday ?? 0} 条`} />
                 <StatusRow label="最近接收" value={status?.listener?.lastReceivedAt ? formatTime(status.listener.lastReceivedAt) : '尚无'} />
-                <StatusRow label="最近错误" value={status?.listener?.lastError || '无'} />
+                <StatusRow label="飞书客户端" value={status?.uiCollector?.state === 'monitoring' || status?.uiCollector?.state === 'paused' ? '已检测' : '未检测'} />
+                <StatusRow label="当前可见群" value={status?.uiCollector?.currentChat || '未识别'} />
+                <StatusRow label="监听状态" value={status?.uiCollector?.monitoring ? '运行中' : '已暂停'} />
+                <StatusRow label="今日捕获" value={`${status?.uiCollector?.messageCount ?? 0} 条`} />
+                <StatusRow label="最近错误" value={status?.uiCollector?.lastError || status?.listener?.lastError || '无'} />
               </div>
             </div>
           </div>
         </aside>
 
         <section className="min-w-0">
+          <section className="mb-5 rounded-2xl border border-[#3370ff]/20 bg-[#3370ff]/[0.04] p-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div><p className="text-sm font-semibold">飞书客户端本地采集</p><p className="mt-1 text-xs text-muted-foreground">只读取当前登录账号在飞书窗口中已经可见的文本，不操作鼠标键盘，不读取缓存或接口。</p></div>
+              <Button size="sm" variant={status?.uiCollector?.monitoring ? 'outline' : 'default'} onClick={() => void toggleUiMonitoring()}>{status?.uiCollector?.monitoring ? '暂停监控' : '开始监控'}</Button>
+            </div>
+            <details className="mt-3 rounded-xl border border-border bg-card p-3 text-xs">
+              <summary className="cursor-pointer font-medium">飞书采集诊断</summary>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 text-muted-foreground">
+                <span>进程 PID：{status?.uiCollector?.pid ?? '未找到'}</span><span>窗口：{status?.uiCollector?.windowTitle || '未找到'}</span>
+                <span>消息列表：{status?.uiCollector?.messageCount ?? 0} 条可见消息</span><span>当前群：{status?.uiCollector?.currentChat || '未识别'}</span>
+                <span className="sm:col-span-2">最近摘要：{status?.uiCollector?.lastSummary || '暂无'}</span>
+                <span className="sm:col-span-2 text-amber-700">错误：{status?.uiCollector?.lastError || '无'}</span>
+              </div>
+            </details>
+          </section>
           <details className="mb-5 rounded-2xl border border-border bg-card p-4 text-sm">
-            <summary className="cursor-pointer font-medium text-muted-foreground">备用入口（手动导入 / 设备上传）</summary>
-            <div className="mt-4 space-y-4"><ManualImportPanel onDraftCreated={loadData} /><DevicePairingPanel /></div>
+            <summary className="cursor-pointer font-medium text-muted-foreground">备用方式 / 高级设置（OAuth、机器人、手动导入、设备上传）</summary>
+            <div className="mt-4 space-y-4"><ManualImportPanel onDraftCreated={loadData} /><DevicePairingPanel /><FeishuConnectionPanel onDraftCreated={loadData} /><CollectorBindingPanel binding={status?.binding} onAction={changeBinding} onUnbind={unbind} /></div>
           </details>
-          <FeishuConnectionPanel onDraftCreated={loadData} />
-          <CollectorBindingPanel binding={status?.binding} onAction={changeBinding} onUnbind={unbind} />
           <div className="mb-5 flex items-end justify-between gap-3">
             <div>
               <div className={`mb-1 flex items-center gap-2 text-xs font-medium ${['connected', 'waiting_for_binding'].includes(status?.listener?.connectionState || '') ? 'text-emerald-700' : 'text-amber-700'}`}><CircleDot className="size-3 fill-current" />{['connected', 'waiting_for_binding'].includes(status?.listener?.connectionState || '') ? '飞书长连接已连接' : status?.listener?.connectionState === 'reconnecting' ? '飞书长连接重连中' : '等待飞书长连接'}{status?.listener?.connectionState === 'waiting_for_binding' ? ` · ${bindingLabel(status?.binding?.status)}` : ''}</div>

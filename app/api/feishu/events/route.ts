@@ -47,7 +47,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const safeMessage = error instanceof Error ? error.message.slice(0, 200) : 'COLLECTOR_ERROR';
     await recordCollectorFailure(safeMessage, body.header.event_id).catch(() => undefined);
-    return jsonError('消息处理失败', 500, { code: 'COLLECTOR_PROCESSING_FAILED', reason: safeMessage });
+    return jsonError('消息处理失败', 500, 'COLLECTOR_PROCESSING_FAILED', { reason: safeMessage });
   }
 }
 
@@ -75,3 +75,4 @@ function extractUrl(value: unknown): string | undefined {
   for (const item of Object.values(record)) { const url = extractUrl(item); if (url) return url; }
   return undefined;
 }
+

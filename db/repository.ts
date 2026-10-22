@@ -899,7 +899,7 @@ function mapDraft(row: Record<string, unknown>): DraftRecord {
 }
 
 function allowedChatIds() {
-  return (env.FEISHU_ALLOWED_CHAT_IDS ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+  return (env.FEISHU_ALLOWED_CHAT_IDS ?? '').split(',').map((value: string) => value.trim()).filter(Boolean);
 }
 
 function configuredChatName(chatId: string) {

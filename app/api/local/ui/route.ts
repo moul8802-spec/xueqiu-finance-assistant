@@ -22,8 +22,9 @@ export async function POST(request: Request) {
       const ui = await setUiCollectorMonitoring(action === 'start');
       return Response.json({ ok: true, ui });
     }
-    if (!['silent', 'auto'].includes(String(body.mode ?? '')) && !['start_auto', 'pause_auto', 'stop_auto', 'skip', 'config'].includes(action)) return jsonError('控制动作无效', 400, 'UI_CONTROL_INVALID');
-    const mode = body.mode === 'auto' || body.mode === 'silent' ? body.mode : undefined;
+    const requestedMode = typeof body.mode === 'string' ? body.mode : '';
+    if (!['silent', 'auto'].includes(requestedMode) && !['start_auto', 'pause_auto', 'stop_auto', 'skip', 'config'].includes(action)) return jsonError('控制动作无效', 400, 'UI_CONTROL_INVALID');
+    const mode = requestedMode === 'auto' || requestedMode === 'silent' ? requestedMode : undefined;
     const whitelist = Array.isArray(body.whitelist) ? body.whitelist.map(String).map((value) => value.trim()).filter(Boolean).slice(0, 200) : undefined;
     const maxMessages = typeof body.maxMessages === 'number' ? Math.max(1, Math.min(200, Math.floor(body.maxMessages))) : undefined;
     const ui = await setUiCollectorControl({

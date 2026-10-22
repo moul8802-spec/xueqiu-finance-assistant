@@ -136,17 +136,6 @@ export function ReviewDashboard() {
     setNotice('已解除绑定，等待下一条群消息');
     await loadData();
   }
-  async function toggleUiMonitoring() {
-    const action = status?.uiCollector?.monitoring ? 'pause' : 'start';
-    const response = await fetch('/api/local/ui', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'control', action }),
-    });
-    if (!response.ok) { setNotice('本地采集控制失败，请重试'); return; }
-    setNotice(action === 'pause' ? '已暂停飞书客户端监听' : '已开始飞书客户端监听');
-    await loadData();
-  }
-
   async function setUiControl(body: Record<string, unknown>, noticeText?: string) {
     const response = await fetch('/api/local/ui', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'control', ...body }),

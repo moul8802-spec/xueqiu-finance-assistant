@@ -263,6 +263,8 @@ def main() -> int:
     ws_log = (data / "logs" / "feishu-ws.log").open("a", encoding="utf-8")
     ws_env = env.copy()
     ws_env.update(local_vars)
+    # Pass normalized runtime values so a template placeholder never activates an allowlist.
+    ws_env.update({"FEISHU_ALLOWED_CHAT_IDS": allowed_ids, "FEISHU_ALLOWED_CHAT_NAMES": allowed_names, "SIMULATION_MODE": str(simulation).lower()})
     ws_env.update({"FEISHU_WS_BRIDGE_URL": f"http://127.0.0.1:{port}/api/local/feishu", "FEISHU_WS_BRIDGE_TOKEN": bridge_token, "FEISHU_WS_LOG_FILE": str(data / 'logs' / 'feishu-ws.log'), "FEISHU_WS_LOCK_FILE": str(data / 'state' / 'feishu-ws.lock'), "FEISHU_WS_PID_FILE": str(data / 'state' / 'feishu-ws.pid')})
     ws = None
     atexit.register(lambda: server.poll() is None and server.terminate())

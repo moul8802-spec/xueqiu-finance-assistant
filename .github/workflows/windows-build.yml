@@ -31,7 +31,9 @@ jobs:
         shell: pwsh
         run: |
           npm ci
+          $env:NEXT_PUBLIC_BUILD_ID = "${{ github.sha }} / run-${{ github.run_number }}"
           npm run build
+          @{ commit = "${{ github.sha }}"; build_time = (Get-Date).ToUniversalTime().ToString('o'); run = "${{ github.run_number }}" } | ConvertTo-Json | Set-Content -Encoding utf8 build-info.json
           @"
           SIMULATION_MODE="true"
           FEISHU_VERIFICATION_TOKEN="local-test-token"
@@ -57,6 +59,7 @@ jobs:
             --add-data "node_modules;node_modules" `
             --add-data ".dev.vars.example;." `
             --add-data "README.md;." `
+            --add-data "build-info.json;." `
             --add-data "feishu-ws.mjs;." `
             launcher.py
 
@@ -76,12 +79,22 @@ jobs:
           New-Item -ItemType Directory -Force $testDir | Out-Null
           Copy-Item dist\雪球财经助手 $testDir -Recurse -Force
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
+          if (-not (Test-Path (Join-Path $testDir '雪球财经助手\_internal\feishu-ws.mjs'))) { throw 'PyInstaller bundle 缺少 feishu-ws.mjs' }
+          if (-not (Test-Path (Join-Path $testDir '雪球财经助手\_internal\runtime\node.exe'))) { throw 'PyInstaller bundle 缺少 portable Node runtime' }
+          if (-not (Test-Path (Join-Path $testDir '雪球财经助手\_internal\build-info.json'))) { throw 'PyInstaller bundle 缺少 build-info.json' }
           $env:XUEQIU_PORT = '8787'
+          $env:XUEQIU_TEST_FORCE_WS = '1'
+          $env:FEISHU_APP_ID = 'cli_ci_websocket_smoke'
+          $env:FEISHU_APP_SECRET = 'ci-websocket-smoke-secret'
           Write-Host "EXE exists=$((Test-Path $exe)) size=$((Get-Item $exe).Length) path=$exe"
           $stdout = Join-Path $testDir 'launcher.stdout.log'
           $stderr = Join-Path $testDir 'launcher.stderr.log'
           $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           Start-Sleep -Seconds 5
+          $wsLog = Join-Path $env:LOCALAPPDATA '雪球财经助手\logs\feishu-ws.log'
+          if (-not (Test-Path $wsLog)) { throw 'EXE 启动后未生成 feishu-ws.log：请检查 PyInstaller bundle_root、Node 子进程与日志重定向' }
+          Write-Host '--- feishu-ws.log ---'
+          Get-Content $wsLog -Tail 80
           $proc.Refresh()
           $exitCode = if ($proc.HasExited) { $proc.ExitCode } else { 'running' }
           Write-Host "EXE pid=$($proc.Id) exited=$($proc.HasExited) exitcode=$exitCode"
@@ -130,6 +143,9 @@ jobs:
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
           $env:XUEQIU_PORT = '8788'
+          $env:XUEQIU_TEST_FORCE_WS = '1'
+          $env:FEISHU_APP_ID = 'cli_ci_websocket_smoke'
+          $env:FEISHU_APP_SECRET = 'ci-websocket-smoke-secret'
           $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
           try {
             $ready = $false
@@ -166,6 +182,9 @@ jobs:
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
           $env:XUEQIU_PORT = '8787'
+          $env:XUEQIU_TEST_FORCE_WS = '1'
+          $env:FEISHU_APP_ID = 'cli_ci_websocket_smoke'
+          $env:FEISHU_APP_SECRET = 'ci-websocket-smoke-secret'
           $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
           try {
             $fallbackReady = $false
@@ -203,6 +222,9 @@ jobs:
           $testDir = Join-Path $env:TEMP '雪球财经助手测试'
           $exe = Join-Path $testDir '雪球财经助手\雪球财经助手.exe'
           $env:XUEQIU_PORT = '8789'
+          $env:XUEQIU_TEST_FORCE_WS = '1'
+          $env:FEISHU_APP_ID = 'cli_ci_websocket_smoke'
+          $env:FEISHU_APP_SECRET = 'ci-websocket-smoke-secret'
           $env:XUEQIU_NO_BROWSER = '1'
           $proc = Start-Process -FilePath $exe -WorkingDirectory $testDir -PassThru
           try {

@@ -697,7 +697,7 @@ export async function setUiCollectorMonitoring(monitoring: boolean): Promise<UiC
 
 export async function getSystemStatus() {
   await ensureDatabase();
-  const [pending, duplicates, messages, collector] = await Promise.all([
+  const [pending, duplicates, messages, collector, ui] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS count FROM drafts WHERE status = 'pending'").first<{ count: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS count FROM messages WHERE status = 'duplicate' AND received_at > ?").bind(startOfToday()).first<{ count: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM messages WHERE received_at > ?').bind(startOfToday()).first<{ count: number }>(),

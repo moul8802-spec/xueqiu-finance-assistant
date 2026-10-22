@@ -298,15 +298,30 @@ class FeishuUiCollector:
                 except Exception:
                     break
             clicked = False
-            for candidate in candidates:
-                try:
-                    candidate.click_input()
-                    clicked = True
+            # Prefer the UIA Invoke/Selection patterns when available. They
+            # activate the owning list row without relying on mouse geometry.
+            for candidate in reversed(candidates):
+                for method_name in ("invoke", "select"):
+                    try:
+                        method = getattr(candidate, method_name, None)
+                        if callable(method):
+                            method()
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+                if clicked:
                     break
-                except Exception:
-                    continue
             if not clicked:
-                self._log(f"自动巡检打开群失败 chat={item['name']} error=click_failed")
+                for candidate in reversed(candidates):
+                    try:
+                        candidate.click_input()
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
+            if not clicked:
+                self._log(f"自动巡检打开群失败 chat={item['name']} error=click_failed control={self._info(element, 'control_type')}")
                 return False
             self._log(f"自动巡检打开群：{item['name']} unread={item['unreadCount']}")
             return True

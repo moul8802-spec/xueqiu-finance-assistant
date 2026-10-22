@@ -9,8 +9,32 @@ export async function POST(request: Request) {
   if (!bridgeToken || !supplied || supplied !== bridgeToken) return jsonError('本地飞书桥接令牌无效', 401, 'LOCAL_BRIDGE_UNAUTHORIZED');
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.type !== 'string') return jsonError('本地飞书事件格式无效', 400, 'LOCAL_EVENT_INVALID');
-,  if (body.type === 'connection') {,    await recordCollectorConnection(String(body.state || 'error'), typeof body.error === 'string' ? body.error : undefined);,    await recordCollectorBridgeStatus(200);,    console.log('[feishu-bridge] connection HTTP 200 state=' + String(body.state || 'error'));,    return Response.json({ ok: true, bridgeStatus: 200 });,  }
-,  if (body.type === 'candidate') {,    const chatId = typeof body.chatId === 'string' ? body.chatId : '';,    const messageId = typeof body.messageId === 'string' ? body.messageId : '';,    const eventId = typeof body.eventId === 'string' ? body.eventId : messageId;,    const receivedAt = typeof body.rawEventAt === 'number',      ? body.rawEventAt,      : (typeof body.eventTimestamp === 'number' ? body.eventTimestamp : Date.now());,    if (!chatId || !messageId) {,      await recordCollectorBridgeStatus(400, 'LOCAL_CANDIDATE_INVALID');,      console.log('[feishu-bridge] candidate HTTP 400 code=LOCAL_CANDIDATE_INVALID');,      return jsonError('待绑定事件缺少群或消息标识', 400, 'LOCAL_CANDIDATE_INVALID');,    },    await recordCollectorRawEvent(eventId, receivedAt);,    const binding = await recordCollectorCandidate(chatId, typeof body.chatName === 'string' ? body.chatName : '', messageId, receivedAt);,    await recordCollectorBridgeStatus(200);,    console.log('[feishu-bridge] candidate HTTP 200 written=true chat_id=' + chatId + ' message_id=' + messageId);,    return Response.json({ ok: true, bridgeStatus: 200, written: true, binding });,  }
+
+  if (body.type === 'connection') {
+    await recordCollectorConnection(String(body.state || 'error'), typeof body.error === 'string' ? body.error : undefined);
+    await recordCollectorBridgeStatus(200);
+    console.log('[feishu-bridge] connection HTTP 200 state=' + String(body.state || 'error'));
+    return Response.json({ ok: true, bridgeStatus: 200 });
+  }
+
+  if (body.type === 'candidate') {
+    const chatId = typeof body.chatId === 'string' ? body.chatId : '';
+    const messageId = typeof body.messageId === 'string' ? body.messageId : '';
+    const eventId = typeof body.eventId === 'string' ? body.eventId : messageId;
+    const receivedAt = typeof body.rawEventAt === 'number'
+      ? body.rawEventAt
+      : (typeof body.eventTimestamp === 'number' ? body.eventTimestamp : Date.now());
+    if (!chatId || !messageId) {
+      await recordCollectorBridgeStatus(400, 'LOCAL_CANDIDATE_INVALID');
+      console.log('[feishu-bridge] candidate HTTP 400 code=LOCAL_CANDIDATE_INVALID');
+      return jsonError('待绑定事件缺少群或消息标识', 400, 'LOCAL_CANDIDATE_INVALID');
+    }
+    await recordCollectorRawEvent(eventId, receivedAt);
+    const binding = await recordCollectorCandidate(chatId, typeof body.chatName === 'string' ? body.chatName : '', messageId, receivedAt);
+    await recordCollectorBridgeStatus(200);
+    console.log('[feishu-bridge] candidate HTTP 200 written=true chat_id=' + chatId + ' message_id=' + messageId);
+    return Response.json({ ok: true, bridgeStatus: 200, written: true, binding });
+  }
   if (body.type !== 'message') { await recordCollectorBridgeStatus(200); console.log('[feishu-bridge] ignored event HTTP 200 type=' + String(body.type)); return Response.json({ ok: true, bridgeStatus: 200, ignored: 'unsupported_local_event' }); }
   const eventId = typeof body.eventId === 'string' ? body.eventId : '';
   const messageId = typeof body.messageId === 'string' ? body.messageId : '';

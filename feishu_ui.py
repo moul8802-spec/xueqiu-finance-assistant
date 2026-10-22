@@ -285,12 +285,46 @@ class FeishuUiCollector:
         if element is None:
             return False
         try:
-            element.click_input()
+            # The visible group name is a Text node inside a clickable row. On
+            # some Feishu builds clicking the Text node itself only selects the
+            # label, so try the row and its immediate ancestors in order.
+            candidates = [element]
+            current = element
+            for _ in range(3):
+                try:
+                    current = current.parent()
+                    if current is not None:
+                        candidates.append(current)
+                except Exception:
+                    break
+            clicked = False
+            for candidate in candidates:
+                try:
+                    candidate.click_input()
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+            if not clicked:
+                self._log(f"自动巡检打开群失败 chat={item['name']} error=click_failed")
+                return False
             self._log(f"自动巡检打开群：{item['name']} unread={item['unreadCount']}")
             return True
         except Exception as error:
             self._log(f"自动巡检打开群失败 chat={item['name']} error={type(error).__name__}")
             return False
+
+    def _wait_for_chat(self, window: Any, expected_name: str, timeout: float = 4.0) -> bool:
+        """Wait until the visible chat pane reports the requested group name."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            root = self._find_chat_root(window)
+            texts = self._visible_texts(root if root is not None else window)
+            if expected_name in texts:
+                return True
+            time.sleep(0.25)
+        self._log(f"自动巡检切换确认失败 chat={expected_name}")
+        return False
 
     def _auto_cycle(self, window: Any) -> None:
         self.discovered_groups = self._discover_unread_groups(window)
@@ -307,7 +341,8 @@ class FeishuUiCollector:
             self._post_diagnostic(window, self._text(window) or "飞书", self.current_scanning, [], "")
             if not self._click_group(item):
                 continue
-            time.sleep(0.8)
+            if not self._wait_for_chat(window, item["name"]):
+                continue
             captured, duplicates, _ = self._scan_current_chat(window, auto=True)
             self.cycle["scanned"] += 1
             self.cycle["captured"] += captured

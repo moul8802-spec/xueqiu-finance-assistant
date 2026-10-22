@@ -52,7 +52,7 @@ jobs:
       - name: Build portable Windows EXE directory with PyInstaller
         shell: pwsh
         run: |
-          python -m pip install --upgrade pyinstaller
+          python -m pip install --upgrade pyinstaller pywinauto
           pyinstaller --noconfirm --clean --onedir --console --name "雪球财经助手" `
             --add-binary "build-runtime\node.exe;runtime" `
             --add-data "dist;dist" `

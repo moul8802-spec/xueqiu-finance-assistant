@@ -708,7 +708,7 @@ export async function getSystemStatus() {
   const uiCollector = uiCollectorFromRow(ui);
   return {
     mode: env.SIMULATION_MODE === 'true' ? 'simulation' : 'live',
-    configured: Boolean((env.FEISHU_WS_ENABLED === 'true' || env.FEISHU_VERIFICATION_TOKEN) && (allowedChatIds().length || env.SITE_OWNER_USER_ID || env.LOCAL_DESKTOP_MODE === 'true')),
+    configured: Boolean((env.FEISHU_UI_BRIDGE_TOKEN || env.FEISHU_WS_ENABLED === 'true' || env.FEISHU_VERIFICATION_TOKEN) && (allowedChatIds().length || env.SITE_OWNER_USER_ID || env.LOCAL_DESKTOP_MODE === 'true')),
     allowedChats: binding.status === 'bound' ? 1 : allowedChatIds().length,
     pending: pending?.count ?? 0,
     duplicatesToday: duplicates?.count ?? 0,

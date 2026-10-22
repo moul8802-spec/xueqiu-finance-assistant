@@ -12,6 +12,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+from feishu_ui import FeishuUiCollector
+
 APP_NAME = "雪球财经助手"
 DEFAULT_PORT = 8787
 BUILD_ID = os.environ.get("XUEQIU_BUILD_ID", "dev-local")
@@ -256,8 +258,9 @@ def main() -> int:
     server_handle = server_log.open("a", encoding="utf-8")
     env = os.environ.copy()
     env.update({"WRANGLER_SEND_METRICS": "false", "NO_COLOR": "1"})
-    ws_enabled = (not simulation) or force_ws
-    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"LOCAL_DESKTOP_MODE:true", "--var", f"FEISHU_VERIFICATION_TOKEN:{verification_token}", "--var", f"FEISHU_WS_ENABLED:{str(ws_enabled).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
+    ws_enabled = local_vars.get("FEISHU_WS_ENABLED", "false").lower() == "true" or force_ws
+    ui_enabled = local_vars.get("FEISHU_UI_ENABLED", "true").lower() != "false"
+    command = [str(node), str(wrangler), "dev", "--local", "--config", str(config), "--persist-to", str(data / "state"), "--port", str(port), "--var", f"SIMULATION_MODE:{str(simulation).lower()}", "--var", f"LOCAL_DESKTOP_MODE:true", "--var", f"FEISHU_VERIFICATION_TOKEN:{verification_token}", "--var", f"FEISHU_WS_ENABLED:{str(ws_enabled).lower()}", "--var", f"FEISHU_WS_BRIDGE_TOKEN:{bridge_token}", "--var", f"FEISHU_UI_BRIDGE_TOKEN:{bridge_token}", "--var", "FEISHU_LOCAL_OWNER_ID:windows-owner", "--var", f"FEISHU_ALLOWED_CHAT_IDS:{allowed_ids}", "--var", f"FEISHU_ALLOWED_CHAT_NAMES:{allowed_names}", "--show-interactive-dev-session", "false"]
     log_line(log_file, f"启动本地审核服务：端口 {port}")
     server = subprocess.Popen(command, cwd=str(root), env=env, stdout=server_handle, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     ws_log = (data / "logs" / "feishu-ws.log").open("a", encoding="utf-8")
@@ -267,6 +270,7 @@ def main() -> int:
     ws_env.update({"FEISHU_ALLOWED_CHAT_IDS": allowed_ids, "FEISHU_ALLOWED_CHAT_NAMES": allowed_names, "SIMULATION_MODE": str(simulation).lower()})
     ws_env.update({"FEISHU_WS_BRIDGE_URL": f"http://127.0.0.1:{port}/api/local/feishu", "FEISHU_WS_BRIDGE_TOKEN": bridge_token, "FEISHU_WS_LOG_FILE": str(data / 'logs' / 'feishu-ws.log'), "FEISHU_WS_LOCK_FILE": str(data / 'state' / 'feishu-ws.lock'), "FEISHU_WS_PID_FILE": str(data / 'state' / 'feishu-ws.pid')})
     ws = None
+    ui_collector = None
     atexit.register(lambda: server.poll() is None and server.terminate())
     try:
         wait_for_http(port, log_file, server, server_log)
@@ -276,6 +280,18 @@ def main() -> int:
         if ws_enabled:
             ws = subprocess.Popen([str(node), str(ws_script)], cwd=str(root), env=ws_env, stdout=ws_log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
             atexit.register(lambda: ws is not None and ws.poll() is None and ws.terminate())
+        if ui_enabled:
+            ui_log = data / "logs" / "feishu-ui.log"
+            ui_collector = FeishuUiCollector(
+                bridge_url=f"http://127.0.0.1:{port}/api/local/ui",
+                token=bridge_token,
+                data_root=data,
+                log_file=ui_log,
+                interval=float(local_vars.get("FEISHU_UI_POLL_SECONDS", "3") or "3"),
+            )
+            ui_collector.start()
+            atexit.register(lambda: ui_collector is not None and ui_collector.stop())
+            log_line(log_file, "飞书 UI Automation 本地采集已启动（只读取当前可见窗口）")
         url = f"http://127.0.0.1:{port}/"
         log_line(log_file, f"请在浏览器打开：{url}")
         if os.environ.get("XUEQIU_NO_BROWSER") != "1":
@@ -287,6 +303,8 @@ def main() -> int:
         log_line(log_file, f"启动失败：{error}")
         return 1
     finally:
+        if ui_collector is not None:
+            ui_collector.stop()
         for process in (ws, server):
             if process is not None and process.poll() is None:
                 process.terminate()

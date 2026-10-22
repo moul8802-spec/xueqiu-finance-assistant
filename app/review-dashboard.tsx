@@ -21,7 +21,7 @@ type Draft = {
 
 type SystemStatus = {
   mode: string; configured: boolean; allowedChats: number; pending: number;
-  duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; connectionState?: string; lastReceivedAt: number | null; lastSuccessAt: number | null; lastError: string | null; consecutiveFailures: number };
+  duplicatesToday: number; messagesToday: number; listener?: { enabled: boolean; connectionState?: string; lastReceivedAt: number | null; lastSuccessAt: number | null; lastRawEventAt?: number | null; lastEventId?: string | null; lastBridgeStatus?: number | null; lastError: string | null; consecutiveFailures: number };
   binding?: { status: 'unbound' | 'pending' | 'bound'; boundChatId: string | null; boundChatName: string | null; pendingChatId: string | null; pendingChatName: string | null; pendingMessageId: string | null; pendingReceivedAt: number | null };
 };
 

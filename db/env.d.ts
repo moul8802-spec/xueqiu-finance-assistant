@@ -3,8 +3,10 @@ declare namespace Cloudflare {
     DB: D1Database;
     FEISHU_VERIFICATION_TOKEN?: string;
     FEISHU_ALLOWED_CHAT_NAMES?: string;
+    FEISHU_ALLOWED_CHAT_IDS?: string;
     FEISHU_WS_ENABLED?: string;
     FEISHU_WS_BRIDGE_TOKEN?: string;
+    FEISHU_UI_BRIDGE_TOKEN?: string;
     FEISHU_LOCAL_OWNER_ID?: string;
     LOCAL_DESKTOP_MODE?: string;
     FEISHU_APP_ID?: string;
@@ -21,4 +23,5 @@ declare namespace Cloudflare {
     SITE_OWNER_USER_ID?: string;
   }
 }
+
 

@@ -160,7 +160,7 @@ def cleanup_stale_ws(data: Path, log_file: Path) -> None:
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             f"(Get-CimInstance Win32_Process -Filter \\"ProcessId = {pid}\\").CommandLine"],
+             f'(Get-CimInstance Win32_Process -Filter "ProcessId = {pid}").CommandLine'],
             capture_output=True, text=True, timeout=5, check=False,
         )
         command_line = result.stdout.strip()

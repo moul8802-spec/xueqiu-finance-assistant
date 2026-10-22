@@ -16,7 +16,7 @@ let lockHandle = null;
 function wsLog(message) {
   const line = '[' + new Date().toISOString() + '] ' + message;
   if (logFile) {
-    try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, line + '\\n', 'utf8'); } catch { /* keep stdout diagnostics */ }
+    try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, line + '\n', 'utf8'); } catch { /* keep stdout diagnostics */ }
   }
   console.log(message);
 }

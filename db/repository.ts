@@ -26,6 +26,11 @@ export type DraftMetadata = {
   keyPoints?: string[];
   factCheckFlags?: string[];
   organizationMode?: 'ai' | 'rules' | 'feishu' | 'none';
+  forwardedFromName?: string;
+  forwardedFromTime?: number;
+  forwardedFromMessageId?: string;
+  forwardedSourceChatId?: string;
+  forwardedMessageCount?: number;
 };
 
 export type InboundMessage = {
@@ -35,6 +40,11 @@ export type InboundMessage = {
   chatName?: string;
   senderId?: string;
   senderName?: string;
+  forwardedFromName?: string;
+  forwardedFromTime?: number;
+  forwardedFromMessageId?: string;
+  forwardedSourceChatId?: string;
+  forwardedMessageCount?: number;
   source?: string;
   sourceUrl?: string;
   eventTimestamp?: number;
@@ -488,7 +498,10 @@ export async function processInboundMessage(input: InboundMessage) {
     return { outcome: 'duplicate' as const, messageId: messageRowId };
   }
 
-  const sourceLabel = input.chatName || selected?.name || configuredChatName(input.chatId) || `飞书群 ${maskId(input.chatId)}`;
+  const sourceLabelBase = input.chatName || selected?.name || configuredChatName(input.chatId) || `飞书群 ${maskId(input.chatId)}`;
+  const sourceLabel = input.forwardedFromName
+    ? `${sourceLabelBase} ← 转发来源：${input.forwardedFromName}`
+    : sourceLabelBase;
   let category: AiOrganizationCategory = '其他';
   let topic = 'other';
   let title = '';
@@ -554,6 +567,11 @@ export async function processInboundMessage(input: InboundMessage) {
     keyPoints: [text],
     factCheckFlags: ['待人工核验：时间、数字、主体与来源', ...(organizationMode === 'ai' ? ['AI提炼仅供辅助，未完成事实核验'] : ['规则模式：未调用AI'])],
     organizationMode,
+    forwardedFromName: input.forwardedFromName,
+    forwardedFromTime: input.forwardedFromTime,
+    forwardedFromMessageId: input.forwardedFromMessageId,
+    forwardedSourceChatId: input.forwardedSourceChatId,
+    forwardedMessageCount: input.forwardedMessageCount,
   };
   await env.DB.batch([
     env.DB.prepare('INSERT INTO drafts (id, title, body, status, category, topic_key, source_chat_id, source_label, source_message_ids, review_flags, metadata_json, created_at, updated_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)')
